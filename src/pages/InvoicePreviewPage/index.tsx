@@ -80,15 +80,7 @@ export const InvoicePreviewPage: React.FC = () => {
         );
     }
 
-    const formattedDate = new Date(invoice.invoiceDate).toLocaleString('en-GB', {
-        day: '2-digit',
-        month: 'long',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true,
-    });
-
+    
     return (
         <div className="page invoice-preview">
 
