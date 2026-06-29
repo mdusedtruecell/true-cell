@@ -8,7 +8,7 @@ type Props = {
 
 const TERMS = [
     'Payment Accepted Directly to through Company.',
-    'Kindly Collect your Receipt for all Transaction including Cash Payment. Company Will not be responsible if Brian stocks Directly to salesman or the third party.',
+    'Kindly Collect your Receipt for all Transaction including Cash Payment. Company Will not be responsible if Return stocks Directly to salesman or the third party.',
     'To Claim any further assistance you should be with our Documents.',
 ];
 
