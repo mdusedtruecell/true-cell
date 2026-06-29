@@ -7,9 +7,9 @@ type Props = {
 };
 
 const TERMS = [
-    'Payment Accepted Directly to through Company.',
-    'Kindly Collect your Receipt for all Transaction including Cash Payment. Company Will not be responsible if Return stocks Directly to salesman or the third party.',
-    'To Claim any further assistance you should be with our Documents.',
+    'Payments must be made directly to the company only.',
+    'Please collect an official receipt for every payment, including cash payments. The company will not be responsible for any stock or payment handed over directly to a salesperson or any third party.',
+    'Any claims, warranty requests, or after-sales assistance will only be processed upon company invoice.',
 ];
 
 const InvoicePrintView = React.forwardRef<HTMLDivElement, Props>(({ invoice }, ref) => {
