@@ -5,14 +5,14 @@ export interface SalesRep {
 }
 
 export const SALES_REPS: SalesRep[] = [
-    { id: 3, name: 'Atif Pardesi', code: 'TC0777' },
-    { id: 1, name: 'Shahid Khalid', code: 'TC0050' },
-    { id: 2, name: 'M Usaid', code: 'TC0663' },
-    { id: 3, name: 'Shazen Khan', code: 'TC0777' },
-    { id: 3, name: 'Faisal Ahmed', code: 'TC0777' },
-    { id: 3, name: 'Talha Amdani', code: 'TC0777' },
-    { id: 3, name: 'Humaira Abdul Ghani', code: 'TC0777' },
-    { id: 3, name: 'Hamadou Mounkaila', code: 'TC0777' },
+    { id: 3, name: 'Atif Pardesi', code: 'TC1024' },
+    { id: 1, name: 'Shahid Khalid', code: 'TC1058' },
+    { id: 2, name: 'M Usaid', code: 'TC1133' },
+    { id: 3, name: 'Shazen Khan', code: 'TC1187' },
+    { id: 3, name: 'Faisal Ahmed', code: 'TC1245' },
+    { id: 3, name: 'Talha Amdani', code: 'TC1310' },
+    { id: 3, name: 'Humaira Abdul Ghani', code: 'TC1376' },
+    { id: 3, name: 'Hamadou Mounkaila', code: 'TC1449' },
 ];
 
 export const fetchSalesReps = async (): Promise<SalesRep[]> => {
