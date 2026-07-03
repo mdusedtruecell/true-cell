@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useInvoiceStore } from 'store/invoiceStore';
 import ConfirmDialog from 'components/ConfirmDialog/ConfirmDialog';
@@ -6,7 +6,7 @@ import InvoicePrintView from 'components/InvoicePrintView/InvoicePrintView';
 import { generatePdf, getPdfFilename } from 'utils/pdf';
 import { buildWhatsappMessage } from 'utils/whatsapp';
 import { useToast } from 'components/Toast/Toast';
-import type { Invoice } from 'types/invoice';
+import type { Invoice, InvoiceItem } from 'types/invoice';
 import whatsappIcon from '../../assets/whatsapp.png';
 import deleteIcon from '../../assets/delete.png';
 import plusIcon from '../../assets/plus_icon.png';
@@ -14,46 +14,167 @@ import editIcon from '../../assets/edit_i.png';
 
 type SheetInvoice = Invoice & {
     orderId?: string;
+    orderStatus?: string;
+    orderShipStatus?: string;
+};
+
+type SheetRow = {
+    date?: string;
+    orderId?: string;
+    itemId?: string;
+    invoiceNo?: string;
+    customer?: string;
+    model?: string;
+    qty?: number | string;
+    price?: number | string;
+    total?: number | string;
+    salesPerson?: string;
+    paymentStatus?: string;
+    orderStatus?: string;
+    orderShipStatus?: string;
 };
 
 const GOOGLE_SHEET_WEB_APP_URL =
     'https://script.google.com/macros/s/AKfycbw89yajiSI_8Y_jBBWS_GeUSUHKuf_bO7O6Tk4KbrRfn8KwzJ9g_QPR0WUeY536qohLxg/exec';
 
-// ✅ IMPORTANT:
-// Delete ke liye deleteOrder nahi use kar rahe.
-// Same working save route use karenge with empty items.
-// Apps Script same orderId/invoiceNo wali rows delete karega aur kuch append nahi karega.
-const deleteInvoiceFromGoogleSheet = (invoice: SheetInvoice) => {
+const cleanText = (value: unknown): string => String(value ?? '').trim();
+
+const toNumber = (value: unknown): number => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
+};
+
+const normalizePaymentStatus = (value?: string): 'paid' | 'pending' | 'deposit' => {
+    const status = cleanText(value).toLowerCase();
+
+    if (status === 'paid') return 'paid';
+    if (status === 'deposit') return 'deposit';
+    return 'pending';
+};
+
+const normalizeOrderStatus = (value?: string): string => {
+    const status = cleanText(value).toLowerCase();
+
+    if (status === 'cancel' || status === 'cancelled' || status === 'canceled') {
+        return 'Cancel';
+    }
+
+    return 'Active';
+};
+
+const parseSheetDate = (value?: string): string => {
+    const raw = cleanText(value);
+
+    if (!raw) return new Date().toISOString();
+
+    const clean = raw.replace(/\s+at\s+/i, ' ');
+    const parsed = new Date(clean);
+
+    if (!Number.isNaN(parsed.getTime())) {
+        return parsed.toISOString();
+    }
+
+    return new Date().toISOString();
+};
+
+const getInvoiceKey = (invoice: SheetInvoice): string => {
+    return cleanText(invoice.orderId || invoice.invoiceNumber);
+};
+
+const groupSheetRowsToInvoices = (rows: SheetRow[]): SheetInvoice[] => {
+    const grouped = new Map<string, SheetInvoice>();
+
+    rows.forEach((row) => {
+        const orderStatus = normalizeOrderStatus(row.orderStatus);
+
+        // Cancel orders sheet me rahenge, lekin app history me show nahi honge.
+        if (orderStatus === 'Cancel') return;
+
+        const orderId = cleanText(row.orderId);
+        const invoiceNumber = cleanText(row.invoiceNo || orderId);
+        const key = orderId || invoiceNumber;
+
+        if (!key) return;
+
+        const qty = toNumber(row.qty);
+        const price = toNumber(row.price);
+        const rowTotal = toNumber(row.total) || qty * price;
+
+        const item: InvoiceItem = {
+            id: cleanText(row.itemId) || `${key}-${grouped.get(key)?.items.length ?? 0}`,
+            model: cleanText(row.model),
+            qty,
+            price,
+        };
+
+        const existing = grouped.get(key);
+
+        if (existing) {
+            existing.items.push(item);
+            existing.subtotal += rowTotal;
+            existing.total += rowTotal;
+
+            // Agar kisi row me latest ship status filled hai to card pe wahi show karo.
+            if (cleanText(row.orderShipStatus)) {
+                existing.orderShipStatus = cleanText(row.orderShipStatus);
+            }
+
+            return;
+        }
+
+        grouped.set(key, {
+            orderId,
+            invoiceNumber,
+            customerName: cleanText(row.customer),
+            salesRepresentative: cleanText(row.salesPerson),
+            invoiceDate: parseSheetDate(row.date),
+            items: [item],
+            subtotal: rowTotal,
+            total: rowTotal,
+            depositAmount: 0,
+            paymentStatus: normalizePaymentStatus(row.paymentStatus),
+            orderStatus,
+            orderShipStatus: cleanText(row.orderShipStatus),
+        });
+    });
+
+    return Array.from(grouped.values()).sort((a, b) => {
+        const dateA = new Date(a.invoiceDate).getTime();
+        const dateB = new Date(b.invoiceDate).getTime();
+        return dateB - dateA;
+    });
+};
+
+const buildHistoryUrl = (salesPerson?: string): string => {
+    const params = new URLSearchParams();
+
+    if (salesPerson) {
+        params.set('salesPerson', salesPerson);
+    }
+
+    params.set('_', String(Date.now()));
+
+    return `${GOOGLE_SHEET_WEB_APP_URL}?${params.toString()}`;
+};
+
+const cancelInvoiceInGoogleSheet = (invoice: SheetInvoice) => {
     if (!GOOGLE_SHEET_WEB_APP_URL || GOOGLE_SHEET_WEB_APP_URL.includes('PASTE_')) {
         console.error('Google Sheet Web App URL missing in HistoryPage');
         return;
     }
 
-    const orderId = String(invoice.orderId || invoice.invoiceNumber || '').trim();
-    const invoiceNumber = String(invoice.invoiceNumber || '').trim();
+    const orderId = cleanText(invoice.orderId || invoice.invoiceNumber);
+    const invoiceNumber = cleanText(invoice.invoiceNumber);
 
     const payload = {
-        action: 'save',
-
-        // ✅ Main tracking
+        action: 'cancelOrder',
         orderId,
-
-        // ✅ Backup matching
         previousOrderId: invoiceNumber,
         invoiceNo: invoiceNumber,
         invoiceNumber,
-
-        // ✅ Required fields
-        date: new Date().toISOString(),
-        customer: invoice.customerName || '',
-        salesPerson: invoice.salesRepresentative || '',
-        paymentStatus: invoice.paymentStatus || 'pending',
-
-        // ✅ Empty items means delete old rows and add nothing
-        items: [],
     };
 
-    console.log('Deleting invoice from Google Sheet using save-empty:', payload);
+    console.log('Cancelling order in Google Sheet:', payload);
 
     void fetch(GOOGLE_SHEET_WEB_APP_URL, {
         method: 'POST',
@@ -63,7 +184,7 @@ const deleteInvoiceFromGoogleSheet = (invoice: SheetInvoice) => {
         },
         body: JSON.stringify(payload),
     }).catch((error) => {
-        console.error('Google Sheet delete failed:', error);
+        console.error('Google Sheet cancel failed:', error);
     });
 };
 
@@ -75,34 +196,97 @@ export const HistoryPage: React.FC = () => {
     const invoiceHistory: SheetInvoice[] = useInvoiceStore((s: any) => s.invoiceHistory);
     const deleteFromHistory = useInvoiceStore((s: any) => s.deleteFromHistory);
     const saveInvoice = useInvoiceStore((s: any) => s.saveInvoice);
+    const updateInHistory = useInvoiceStore((s: any) => s.updateInHistory);
 
-    const repInvoices = invoiceHistory.filter(
-        (inv) => inv.salesRepresentative === loggedInRep?.name
-    );
-
-    const totalAmount = repInvoices.reduce((sum, inv) => sum + inv.total, 0);
-
-    const [deleteTarget, setDeleteTarget] = useState<SheetInvoice | null>(null);
+    const [sheetInvoices, setSheetInvoices] = useState<SheetInvoice[]>([]);
+    const [sheetLoaded, setSheetLoaded] = useState(false);
+    const [isSyncing, setIsSyncing] = useState(false);
+    const [cancelTarget, setCancelTarget] = useState<SheetInvoice | null>(null);
     const [shareInvoice, setShareInvoice] = useState<SheetInvoice | null>(null);
 
     const pdfRef = useRef<HTMLDivElement | null>(null);
+
+    const localRepInvoices = invoiceHistory.filter((inv) => {
+        const isSameRep = inv.salesRepresentative === loggedInRep?.name;
+        const isActive = normalizeOrderStatus(inv.orderStatus) !== 'Cancel';
+        return isSameRep && isActive;
+    });
+
+    const repInvoices = sheetLoaded ? sheetInvoices : localRepInvoices;
+
+    const totalAmount = repInvoices.reduce((sum, inv) => sum + inv.total, 0);
+
+    useEffect(() => {
+        if (!loggedInRep?.name) return;
+
+        let isMounted = true;
+
+        const loadHistoryFromSheet = async () => {
+            setIsSyncing(true);
+
+            try {
+                const response = await fetch(buildHistoryUrl(loggedInRep.name), {
+                    method: 'GET',
+                    cache: 'no-store',
+                });
+
+                const json = await response.json();
+
+                if (!json?.success || !Array.isArray(json.data)) {
+                    throw new Error(json?.message || 'Invalid Google Sheet response');
+                }
+
+                const invoices = groupSheetRowsToInvoices(json.data as SheetRow[]);
+
+                if (!isMounted) return;
+
+                setSheetInvoices(invoices);
+                setSheetLoaded(true);
+
+                // Local storage bhi update kar do taake offline/open reload me latest data rahe.
+                invoices.forEach((invoice) => {
+                    updateInHistory(invoice as Invoice);
+                });
+            } catch (error) {
+                console.error('Failed to load Google Sheet history:', error);
+
+                if (!isMounted) return;
+
+                setSheetLoaded(false);
+                push('Could not sync Google Sheet history. Showing local history.');
+            } finally {
+                if (isMounted) {
+                    setIsSyncing(false);
+                }
+            }
+        };
+
+        void loadHistoryFromSheet();
+
+        return () => {
+            isMounted = false;
+        };
+    }, [loggedInRep?.name, push, updateInHistory]);
 
     const handleEdit = (invoice: SheetInvoice) => {
         saveInvoice(invoice);
         navigate('/invoice/new', { state: { invoice, isEditing: true } });
     };
 
-    const confirmDelete = () => {
-        if (!deleteTarget) return;
+    const confirmCancel = () => {
+        if (!cancelTarget) return;
 
-        // ✅ Sheet se delete
-        deleteInvoiceFromGoogleSheet(deleteTarget);
+        // ✅ Sheet me Order Status = Cancel hoga. Sheet rows delete nahi hongi.
+        cancelInvoiceInGoogleSheet(cancelTarget);
 
-        // ✅ App history se delete
-        deleteFromHistory(deleteTarget.invoiceNumber);
+        // ✅ App history se card remove hoga.
+        deleteFromHistory(cancelTarget.invoiceNumber);
+        setSheetInvoices((current) =>
+            current.filter((invoice) => getInvoiceKey(invoice) !== getInvoiceKey(cancelTarget))
+        );
 
-        setDeleteTarget(null);
-        push('Invoice deleted successfully');
+        setCancelTarget(null);
+        push('Order cancelled successfully');
     };
 
     const handleShare = (invoice: SheetInvoice) => {
@@ -157,6 +341,34 @@ export const HistoryPage: React.FC = () => {
         return 'badge badge--pending';
     };
 
+    const shipStatusStyle = (status?: string): React.CSSProperties => {
+        const s = cleanText(status).toLowerCase();
+
+        const base: React.CSSProperties = {
+            fontSize: 12,
+            fontWeight: 600,
+            padding: '4px 10px',
+            borderRadius: 5,
+            color: '#fff',
+            minWidth: 90,
+            textAlign: 'center',
+        };
+
+        if (s === 'ready to ship') {
+            return { ...base, background: '#777777' };
+        }
+
+        if (s === 'in process') {
+            return { ...base, background: '#f05a28' };
+        }
+
+        if (s === 'dcc dispatch') {
+            return { ...base, background: '#a10070' };
+        }
+
+        return { ...base, background: '#777777' };
+    };
+
     return (
         <div className="page history-page">
             <div className="history-header">
@@ -178,10 +390,12 @@ export const HistoryPage: React.FC = () => {
             <main className="history-list-container">
                 {repInvoices.length === 0 ? (
                     <div className="history-empty">
-                        <p>No invoices yet.</p>
-                        <p>
-                            Tap <strong>+</strong> to create your first invoice.
-                        </p>
+                        <p>{isSyncing ? 'Loading invoices...' : 'No invoices yet.'}</p>
+                        {!isSyncing && (
+                            <p>
+                                Tap <strong>+</strong> to create your first invoice.
+                            </p>
+                        )}
                     </div>
                 ) : (
                     <div className="history-scroll">
@@ -195,9 +409,24 @@ export const HistoryPage: React.FC = () => {
                                         {inv.invoiceNumber}
                                     </span>
 
-                                    <span className={statusClass(inv.paymentStatus)}>
-                                        {statusLabel(inv.paymentStatus)}
-                                    </span>
+                                    <div
+                                        style={{
+                                            display: 'flex',
+                                            flexDirection: 'column',
+                                            alignItems: 'flex-end',
+                                            gap: 7,
+                                        }}
+                                    >
+                                        <span className={statusClass(inv.paymentStatus)}>
+                                            {statusLabel(inv.paymentStatus)}
+                                        </span>
+
+                                        {cleanText(inv.orderShipStatus) && (
+                                            <span style={shipStatusStyle(inv.orderShipStatus)}>
+                                                {inv.orderShipStatus}
+                                            </span>
+                                        )}
+                                    </div>
                                 </div>
 
                                 <div className="history-customer padd-14">
@@ -223,9 +452,9 @@ export const HistoryPage: React.FC = () => {
 
                                     <button
                                         className="h-action-btn h-action-btn--del"
-                                        onClick={() => setDeleteTarget(inv)}
+                                        onClick={() => setCancelTarget(inv)}
                                     >
-                                        Delete
+                                        Cancel
                                         <img
                                             src={deleteIcon}
                                             alt=""
@@ -279,12 +508,12 @@ export const HistoryPage: React.FC = () => {
             )}
 
             <ConfirmDialog
-                open={!!deleteTarget}
-                title="Delete Invoice"
-                description="Are you sure you want to delete this invoice? This cannot be undone."
-                confirmLabel="Delete"
-                onConfirm={confirmDelete}
-                onClose={() => setDeleteTarget(null)}
+                open={!!cancelTarget}
+                title="Cancel Order"
+                description="Are you sure you want to cancel this order? It will be removed from app history, but it will stay in Google Sheet as Cancel."
+                confirmLabel="Cancel Order"
+                onConfirm={confirmCancel}
+                onClose={() => setCancelTarget(null)}
             />
         </div>
     );
