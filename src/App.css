@@ -1389,43 +1389,52 @@ body {
    INVOICE PRINT VIEW — updated styles
 ═══════════════════════════════════════════════════════ */
 
-/* Bill To pills (replaces old bill-side / rep-side) */
-.invoice-bill-to {
-  margin-bottom: 12px;
+/* Bill To + Sale Order */
+.invoice-party-section {
+  margin-top: 20px;
+  margin-bottom: 16px;
 }
 
-.bill-to-label {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--text);
-  margin-bottom: 6px;
-}
-
-.bill-to-pills {
+.invoice-party-headings {
   display: flex;
   justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.party-heading {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.4px;
+}
+
+.party-heading--right {
+  text-align: right;
+}
+
+.invoice-party-pills {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
 }
 
 .bill-pill {
-  padding: 5px 12px;
-  border-radius: 10px;
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.bill-pill--customer {
-  background: transparent;
-  border: 1.5px solid var(--primary);
-  color: var(--primary);
-}
-
-.bill-pill--rep {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 108px;
+  height: 28px;
+  padding: 0 14px;
+  border-radius: 9px;
   background: var(--primary);
   color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
 }
-
 /* Payment bars */
 .payment-bar {
   display: flex;

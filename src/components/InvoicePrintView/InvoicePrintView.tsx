@@ -53,11 +53,20 @@ const InvoicePrintView = React.forwardRef<HTMLDivElement, Props>(({ invoice }, r
             </div>
 
             {/* Bill To */}
-            <div className="invoice-bill-to">
-                <div className="bill-to-label">Bill To</div>
-                <div className="bill-to-pills">
-                    <span className="bill-pill bill-pill--rep">{invoice.customerName}</span>
-                    <span className="bill-pill bill-pill--rep">{invoice.salesRepresentative}</span>
+            <div className="invoice-party-section">
+                <div className="invoice-party-headings">
+                    <div className="party-heading">Bill To</div>
+                    <div className="party-heading party-heading--right">Sale Order</div>
+                </div>
+
+                <div className="invoice-party-pills">
+                    <span className="bill-pill bill-pill--customer">
+                        {invoice.customerName}
+                    </span>
+
+                    <span className="bill-pill bill-pill--sales">
+                        {invoice.salesRepresentative}
+                    </span>
                 </div>
             </div>
 
