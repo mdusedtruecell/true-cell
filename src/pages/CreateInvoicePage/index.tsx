@@ -1,7 +1,7 @@
-import React, { useEffect, useState, useRef } from 'react';
-import { useForm, useFieldArray, useWatch } from 'react-hook-form';
+import React, { useEffect, useRef, useState } from 'react';
+import { useFieldArray, useForm, useWatch } from 'react-hook-form';
 import { v4 as uuid } from 'uuid';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import type { Invoice, InvoiceItem } from 'types/invoice';
 import { getDraft, removeDraft, setDraft } from 'utils/localStorage';
 import { generateInvoiceNumber } from 'utils/invoiceNumber';
@@ -18,9 +18,19 @@ import deleteicon from '../../assets/delete.png';
 import whatsappicon from '../../assets/whatsapp.png';
 import redDelete from '../../assets/row_delete.png';
 
-type FormValues = Invoice & { paymentReceived?: boolean };
+type SheetInvoice = Invoice & {
+    orderId?: string;
+};
+
+type FormValues = SheetInvoice & {
+    paymentReceived?: boolean;
+};
 
 const DRAFT_KEY = 'invoice-draft';
+
+// ✅ Apps Script Web App URL yahan paste karo.
+// Important: /exec wala deployed URL use karna hai, /dev wala nahi.
+const GOOGLE_SHEET_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbw89yajiSI_8Y_jBBWS_GeUSUHKuf_bO7O6Tk4KbrRfn8KwzJ9g_QPR0WUeY536qohLxg/exec';
 
 const defaultItem = (): InvoiceItem => ({
     id: uuid(),
@@ -29,10 +39,135 @@ const defaultItem = (): InvoiceItem => ({
     price: undefined,
 });
 
+// ✅ Order ID invoice number se alag aur unique hoga
+const generateOrderId = () => {
+    return `ORD-${Date.now()}-${uuid().slice(0, 8).toUpperCase()}`;
+};
+
+// ✅ Sheet ke liye readable Dubai date format
+const formatDateForSheet = (dateValue?: string) => {
+    const date = dateValue ? new Date(dateValue) : new Date();
+
+    if (Number.isNaN(date.getTime())) {
+        return new Intl.DateTimeFormat('en-GB', {
+            timeZone: 'Asia/Dubai',
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+        })
+            .format(new Date())
+            .replace(',', '')
+            .replaceAll(' ', '-')
+            .replace(/-(\d{2}:\d{2})$/, ' $1');
+    }
+
+    return new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Dubai',
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+    })
+        .format(date)
+        .replace(',', '')
+        .replaceAll(' ', '-')
+        .replace(/-(\d{2}:\d{2})$/, ' $1');
+};
+
+// ✅ Sheet me full invoice save/edit/overwrite
+const syncInvoiceToGoogleSheet = (
+    invoice: SheetInvoice,
+    previousInvoice?: SheetInvoice
+) => {
+    if (!GOOGLE_SHEET_WEB_APP_URL || GOOGLE_SHEET_WEB_APP_URL.includes('PASTE_')) {
+        console.warn('Google Sheet Web App URL missing');
+        return;
+    }
+
+    const orderId = invoice.orderId || generateOrderId();
+
+    const payload = {
+        action: 'save',
+
+        // ✅ Main tracking ID
+        orderId,
+
+        // ✅ Edit/migration ke liye old ID bhi bhej rahe hain
+        previousOrderId:
+            previousInvoice?.orderId ||
+            previousInvoice?.invoiceNumber ||
+            '',
+
+        // ✅ Date ab clean format me sheet me jayegi
+        date: formatDateForSheet(invoice.invoiceDate),
+
+        // ✅ Invoice number alag rahega
+        invoiceNo: invoice.invoiceNumber,
+
+        customer: invoice.customerName,
+        salesPerson: invoice.salesRepresentative,
+        paymentStatus: invoice.paymentStatus,
+
+        items: invoice.items.map((item) => ({
+            id: item.id || uuid(),
+            model: item.model,
+            qty: Number(item.qty) || 0,
+            price: Number(item.price) || 0,
+        })),
+    };
+
+    void fetch(GOOGLE_SHEET_WEB_APP_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: {
+            'Content-Type': 'text/plain;charset=utf-8',
+        },
+        body: JSON.stringify(payload),
+    })
+        .then(() => {
+            console.log('Google Sheet sync request sent');
+        })
+        .catch((error) => {
+            console.error('Google Sheet sync failed:', error);
+        });
+};
+
+// ✅ Invoice delete ke liye helper
+// Isko us file me call karna jahan actual invoice delete hoti hai.
+export const deleteInvoiceFromGoogleSheet = (invoice: SheetInvoice) => {
+    if (!GOOGLE_SHEET_WEB_APP_URL || GOOGLE_SHEET_WEB_APP_URL.includes('PASTE_')) {
+        console.warn('Google Sheet Web App URL missing');
+        return;
+    }
+
+    const payload = {
+        action: 'deleteOrder',
+        orderId: invoice.orderId || invoice.invoiceNumber,
+        previousOrderId: invoice.invoiceNumber,
+    };
+
+    void fetch(GOOGLE_SHEET_WEB_APP_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: {
+            'Content-Type': 'text/plain;charset=utf-8',
+        },
+        body: JSON.stringify(payload),
+    }).catch((error) => {
+        console.error('Google Sheet delete failed:', error);
+    });
+};
+
 export const CreateInvoicePage: React.FC = () => {
     const navigate = useNavigate();
     const location = useLocation();
-    const editInvoice = (location.state as any)?.invoice as Invoice | undefined;
+
+    const editInvoice = (location.state as any)?.invoice as SheetInvoice | undefined;
     const isEditing = !!(location.state as any)?.isEditing;
 
     const selectedRep = useInvoiceStore((s: any) => s.selectedRepresentative);
@@ -41,7 +176,14 @@ export const CreateInvoicePage: React.FC = () => {
     const updateInHistory = useInvoiceStore((s: any) => s.updateInHistory);
     const invoiceHistory: Invoice[] = useInvoiceStore((s: any) => s.invoiceHistory);
 
-    const draft = isEditing ? null : (getDraft<Partial<Invoice>>(DRAFT_KEY) ?? null);
+    const pdfRef = useRef<HTMLDivElement | null>(null);
+    const { push } = useToast();
+
+    const draft = isEditing ? null : (getDraft<Partial<SheetInvoice>>(DRAFT_KEY) ?? null);
+
+    const initialOrderIdRef = useRef<string>(
+        editInvoice?.orderId || draft?.orderId || generateOrderId()
+    );
 
     const {
         register,
@@ -54,10 +196,14 @@ export const CreateInvoicePage: React.FC = () => {
         formState: { errors },
     } = useForm<FormValues>({
         defaultValues: {
+            orderId: editInvoice?.orderId ?? draft?.orderId ?? initialOrderIdRef.current,
             invoiceNumber: editInvoice?.invoiceNumber ?? draft?.invoiceNumber ?? '',
             customerName: editInvoice?.customerName ?? draft?.customerName ?? '',
             salesRepresentative:
-                editInvoice?.salesRepresentative ?? draft?.salesRepresentative ?? selectedRep ?? '',
+                editInvoice?.salesRepresentative ??
+                draft?.salesRepresentative ??
+                selectedRep ??
+                '',
             invoiceDate: editInvoice?.invoiceDate ?? draft?.invoiceDate ?? new Date().toISOString(),
             items: editInvoice?.items ?? draft?.items ?? [defaultItem()],
             subtotal: editInvoice?.subtotal ?? draft?.subtotal ?? 0,
@@ -65,7 +211,7 @@ export const CreateInvoicePage: React.FC = () => {
             depositAmount: editInvoice?.depositAmount ?? draft?.depositAmount ?? 0,
             paymentReceived: editInvoice
                 ? editInvoice.paymentStatus === 'paid'
-                : !!(draft?.paymentStatus === 'paid'),
+                : draft?.paymentStatus === 'paid',
         },
     });
 
@@ -77,34 +223,36 @@ export const CreateInvoicePage: React.FC = () => {
     const watchedItems = useWatch({ control, name: 'items' }) as InvoiceItem[];
     const { subtotal, total } = useInvoiceCalculations((watchedItems || []) as InvoiceItem[]);
 
-    // Auto-save draft (skipped in edit mode)
+    const [confirmOpen, setConfirmOpen] = useState(false);
+    const [isSaved, setIsSaved] = useState(false);
+
+    // Auto-save draft. Edit mode me draft save nahi hoga.
     useEffect(() => {
         if (isEditing) return;
+
         const subscription = watch((value) => {
             setDraft(DRAFT_KEY, value as any);
         }) as any;
+
         return () => subscription?.unsubscribe?.();
     }, [watch, isEditing]);
 
-    // Sync computed totals back into form
+    // Computed total ko form values me update karo.
     useEffect(() => {
-        if (isEditing) return;
-        const currentDraft = getDraft(DRAFT_KEY) ?? {};
-        reset(
-            { ...currentDraft, subtotal, total, paymentReceived: !!(currentDraft.paymentStatus === 'paid') },
-            { keepValues: true }
-        );
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [subtotal, total]);
-
-    const [confirmOpen, setConfirmOpen] = useState(false);
-    const [isSaved, setIsSaved] = useState(false);
+        setValue('subtotal', subtotal as any);
+        setValue('total', total as any);
+    }, [subtotal, total, setValue]);
 
     const onClear = () => setConfirmOpen(true);
 
     const confirmClear = () => {
         removeDraft(DRAFT_KEY);
+
+        const newOrderId = generateOrderId();
+        initialOrderIdRef.current = newOrderId;
+
         reset({
+            orderId: newOrderId,
             invoiceNumber: '',
             customerName: '',
             salesRepresentative: selectedRep ?? '',
@@ -114,15 +262,17 @@ export const CreateInvoicePage: React.FC = () => {
             total: 0,
             depositAmount: 0,
             paymentReceived: false,
-        });
+        } as FormValues);
+
         setIsSaved(false);
         setConfirmOpen(false);
     };
 
-    const existingNumbers = invoiceHistory.map((i) => i.invoiceNumber);
+    const existingNumbers = invoiceHistory.map((invoice) => invoice.invoiceNumber);
 
     const getUniqueInvoiceNumber = (data: Partial<Invoice>): string => {
         const enteredNumber = String(data.invoiceNumber ?? '').trim();
+
         const numbersToCheck = isEditing
             ? existingNumbers.filter((number) => number !== editInvoice?.invoiceNumber)
             : existingNumbers;
@@ -134,72 +284,91 @@ export const CreateInvoicePage: React.FC = () => {
         return generateInvoiceNumber(data.customerName || 'TC', numbersToCheck);
     };
 
-    const buildInvoice = (data: any, number: string): Invoice => ({
-        ...data,
-        invoiceNumber: number,
-        invoiceDate: new Date().toISOString(),
-        subtotal,
-        total,
-        depositAmount: Number(data.depositAmount) || 0,
-        paymentStatus: data.paymentReceived
-            ? 'paid'
-            : Number(data.depositAmount) > 0
-                ? 'deposit'
-                : 'pending',
-    });
+    const buildInvoice = (data: any, number: string): SheetInvoice => {
+        const orderId = String(
+            data.orderId || initialOrderIdRef.current || generateOrderId()
+        ).trim();
 
-    const persistInvoice = (invoice: Invoice) => {
-        saveInvoiceToStore(invoice);
+        initialOrderIdRef.current = orderId;
+        setValue('orderId' as any, orderId as any);
+
+        return {
+            ...data,
+            orderId,
+            invoiceNumber: number,
+            invoiceDate: new Date().toISOString(),
+            subtotal,
+            total,
+            depositAmount: Number(data.depositAmount) || 0,
+            paymentStatus: data.paymentReceived
+                ? 'paid'
+                : Number(data.depositAmount) > 0
+                    ? 'deposit'
+                    : 'pending',
+        };
+    };
+
+    const persistInvoice = (invoice: SheetInvoice) => {
+        saveInvoiceToStore(invoice as Invoice);
         setDraft(`invoice-${invoice.invoiceNumber}`, invoice);
         setDraft('last-invoice', invoice.invoiceNumber);
 
         if (isEditing) {
-            updateInHistory(invoice);
+            updateInHistory(invoice as Invoice);
         } else {
-            addToHistory(invoice);
+            addToHistory(invoice as Invoice);
         }
 
-        // The normal draft must not keep a saved invoice number, otherwise the
-        // next new invoice can reuse the same number and replace history.
         removeDraft(DRAFT_KEY);
         setIsSaved(true);
+
+        // ✅ Save/edit dono cases me sheet overwrite hogi
+        syncInvoiceToGoogleSheet(
+            invoice,
+            isEditing ? editInvoice : undefined
+        );
     };
 
-    // Preview — save to store only, navigate to preview
     const onPreview = (data: any) => {
         const number = getUniqueInvoiceNumber(data);
         setValue('invoiceNumber', number);
+
         const invoice = buildInvoice(data, number);
-        saveInvoiceToStore(invoice);
+
+        saveInvoiceToStore(invoice as Invoice);
         setDraft(`invoice-${number}`, invoice);
         setDraft('last-invoice', number);
+
         navigate('/invoice/preview');
     };
 
-    // Save — persist to history, disable save button
     const onSave = (data: any) => {
         const number = getUniqueInvoiceNumber(data);
         setValue('invoiceNumber', number);
+
         const invoice = buildInvoice(data, number);
+
         persistInvoice(invoice);
         push('Invoice saved successfully');
     };
 
-    const pdfRef = useRef<HTMLDivElement | null>(null);
-    const { push } = useToast();
-
     const shareWhatsApp = async () => {
         const itemsCount = fields.length;
         const fieldNames: string[] = ['customerName', 'salesRepresentative'];
+
         for (let i = 0; i < itemsCount; i++) {
             fieldNames.push(`items.${i}.model`, `items.${i}.qty`, `items.${i}.price`);
         }
+
         const currentRep = watch().salesRepresentative || selectedRep;
+
         if (!currentRep) {
             push('Please select a sales representative before sharing');
             return;
         }
+
         const allValid = await trigger(fieldNames as any);
+
         if (!allValid) {
             push('Please fill all required fields before sharing');
             return;
@@ -208,6 +377,7 @@ export const CreateInvoicePage: React.FC = () => {
         const data = watch();
         const number = getUniqueInvoiceNumber(data);
         setValue('invoiceNumber', number);
+
         const invoice = buildInvoice(data, number);
 
         persistInvoice(invoice);
@@ -217,20 +387,34 @@ export const CreateInvoicePage: React.FC = () => {
                 push('Preparing invoice. Please try again.');
                 return;
             }
+
             const blob = await generatePdf(pdfRef.current);
-            const file = new File([blob], getPdfFilename(invoice), { type: 'application/pdf' });
-            // @ts-ignore
+            const file = new File([blob], getPdfFilename(invoice as Invoice), {
+                type: 'application/pdf',
+            });
+
+            // @ts-ignore - browser support depends on device
             if (navigator.canShare && navigator.canShare({ files: [file] })) {
-                // @ts-ignore
-                await navigator.share({ files: [file], title: `Invoice ${invoice.invoiceNumber}`, text: `Invoice ${invoice.invoiceNumber}` });
+                // @ts-ignore - browser support depends on device
+                await navigator.share({
+                    files: [file],
+                    title: `Invoice ${invoice.invoiceNumber}`,
+                    text: `Invoice ${invoice.invoiceNumber}`,
+                });
                 return;
             }
+
             const url = URL.createObjectURL(blob);
             window.open(url, '_blank');
-            setTimeout(() => URL.revokeObjectURL(url), 10000);
-            const message = buildWhatsappMessage(invoice);
+
+            setTimeout(() => {
+                URL.revokeObjectURL(url);
+            }, 10000);
+
+            const message = buildWhatsappMessage(invoice as Invoice);
             window.open(`https://wa.me/?text=${encodeURIComponent(message)}`);
-        } catch {
+        } catch (error) {
+            console.error('Failed to generate/share PDF:', error);
             push('Failed to generate/share PDF');
         }
     };
@@ -243,12 +427,12 @@ export const CreateInvoicePage: React.FC = () => {
             <Header
                 title={isEditing ? 'Edit Invoice' : 'New Invoice'}
                 left={
-                    <button onClick={() => navigate(-1)} aria-label="Go back">
+                    <button type="button" onClick={() => navigate(-1)} aria-label="Go back">
                         <img src={backbtn} alt="Back" />
                     </button>
                 }
                 right={
-                    <button onClick={onClear} aria-label="Clear invoice">
+                    <button type="button" onClick={onClear} aria-label="Clear invoice">
                         <img src={deleteicon} alt="Clear" />
                     </button>
                 }
@@ -261,16 +445,23 @@ export const CreateInvoicePage: React.FC = () => {
                         <div className="customer-row">
                             <span className="label">Customer Name</span>
                         </div>
+
                         <div className="form-row" style={{ marginBottom: 0 }}>
                             <input
                                 {...register('customerName', {
                                     required: 'Customer name required',
-                                    minLength: { value: 3, message: 'Min 3 chars' },
+                                    minLength: {
+                                        value: 3,
+                                        message: 'Min 3 chars',
+                                    },
                                 })}
                                 placeholder="type customer name"
                             />
+
                             {errors.customerName?.message && (
-                                <div className="error">{String(errors.customerName.message)}</div>
+                                <div className="error">
+                                    {String(errors.customerName.message)}
+                                </div>
                             )}
                         </div>
                     </div>
@@ -279,51 +470,80 @@ export const CreateInvoicePage: React.FC = () => {
                     <div className="invoice-card invoice-card--items">
                         <div className="items">
                             <div className="items-label">Items</div>
+
                             <div className="table-head">
                                 <div>Model</div>
                                 <div>Qty</div>
                                 <div>Price (AED)</div>
                                 <div />
                             </div>
+
                             <div className="items-scroll">
                                 {fields.map((field: any, idx: number) => (
                                     <div className="item-row" key={field.id}>
                                         <div className="field-col">
                                             <input
-                                                className={(errors as any)?.items?.[idx]?.model ? 'input-error' : ''}
-                                                {...register(`items.${idx}.model` as const, { required: 'Model required' })}
+                                                className={
+                                                    (errors as any)?.items?.[idx]?.model
+                                                        ? 'input-error'
+                                                        : ''
+                                                }
+                                                {...register(`items.${idx}.model` as const, {
+                                                    required: 'Model required',
+                                                })}
                                                 defaultValue={(field as any).model}
                                                 placeholder="Model"
                                             />
                                         </div>
+
                                         <div className="field-col">
                                             <input
-                                                className={(errors as any)?.items?.[idx]?.qty ? 'input-error' : ''}
+                                                className={
+                                                    (errors as any)?.items?.[idx]?.qty
+                                                        ? 'input-error'
+                                                        : ''
+                                                }
                                                 type="number"
                                                 {...register(`items.${idx}.qty` as const, {
                                                     valueAsNumber: true,
                                                     required: 'Qty required',
-                                                    min: { value: 1, message: 'Min 1' },
+                                                    min: {
+                                                        value: 1,
+                                                        message: 'Min 1',
+                                                    },
                                                 })}
                                                 defaultValue={(field as any).qty ?? ''}
                                                 placeholder="0"
-                                                onInput={() => { void trigger(`items.${idx}.qty`); }}
+                                                onInput={() => {
+                                                    void trigger(`items.${idx}.qty` as any);
+                                                }}
                                             />
                                         </div>
+
                                         <div className="field-col">
                                             <input
-                                                className={(errors as any)?.items?.[idx]?.price ? 'input-error' : ''}
+                                                className={
+                                                    (errors as any)?.items?.[idx]?.price
+                                                        ? 'input-error'
+                                                        : ''
+                                                }
                                                 type="number"
                                                 {...register(`items.${idx}.price` as const, {
                                                     valueAsNumber: true,
                                                     required: 'Price required',
-                                                    min: { value: 0.01, message: 'Min 0.01' },
+                                                    min: {
+                                                        value: 0.01,
+                                                        message: 'Min 0.01',
+                                                    },
                                                 })}
                                                 defaultValue={(field as any).price ?? ''}
                                                 placeholder="0"
-                                                onInput={() => { void trigger(`items.${idx}.price`); }}
+                                                onInput={() => {
+                                                    void trigger(`items.${idx}.price` as any);
+                                                }}
                                             />
                                         </div>
+
                                         <button
                                             type="button"
                                             className="remove-btn"
@@ -343,44 +563,54 @@ export const CreateInvoicePage: React.FC = () => {
                         className="add-item"
                         onClick={async () => {
                             const idx = fields.length - 1;
+
                             if (idx >= 0) {
-                                const valid = await trigger([`items.${idx}.model`, `items.${idx}.qty`, `items.${idx}.price`]);
+                                const valid = await trigger([
+                                    `items.${idx}.model`,
+                                    `items.${idx}.qty`,
+                                    `items.${idx}.price`,
+                                ] as any);
+
                                 if (!valid) return;
                             }
+
                             append(defaultItem());
                         }}
                     >
                         + Add item
                     </button>
 
-                    {/* Deposit + Total + Payment checkbox */}
+                    {/* Deposit + Total */}
                     <div className="invoice-card invoice-card--summary">
                         <div className="deposit-total-row">
                             <div className="deposit-col">
                                 <label className="deposit-label">Deposit Amount</label>
+
                                 <input
                                     type="number"
                                     className="deposit-input"
-                                    {...register('depositAmount', { valueAsNumber: true, min: 0 })}
+                                    {...register('depositAmount', {
+                                        valueAsNumber: true,
+                                        min: 0,
+                                    })}
                                     placeholder="0"
                                     min={0}
                                 />
                             </div>
+
                             <div className="total-col">
                                 <span className="total-label-sm">Total</span>
                                 <span className="total-value-sm">{total.toFixed(2)}</span>
                             </div>
                         </div>
-
-
                     </div>
+
                     <div>
                         <label className="payment-check-row">
                             <input type="checkbox" {...register('paymentReceived')} />
                             <span>Full Payment Received</span>
                         </label>
                     </div>
-
                 </div>
 
                 {/* Footer */}
@@ -393,6 +623,7 @@ export const CreateInvoicePage: React.FC = () => {
                         >
                             Preview
                         </button>
+
                         <button
                             type="button"
                             className="btn-save"
@@ -401,40 +632,56 @@ export const CreateInvoicePage: React.FC = () => {
                         >
                             {isSaved ? 'Saved' : 'Save'}
                         </button>
-                        <button
-                            type="button"
-                            className="wa"
-                            onClick={shareWhatsApp}
-                        >
+
+                        <button type="button" className="wa" onClick={shareWhatsApp}>
                             <img src={whatsappicon} alt="WhatsApp" />
                             Share
                         </button>
                     </div>
-                    <div className="powered-text powered-text--light">Powered by Truecell Electronics Trading LLC</div>
+
+                    <div className="powered-text powered-text--light">
+                        Powered by Truecell Electronics Trading LLC
+                    </div>
                 </div>
             </main>
 
             {/* Hidden print view for PDF generation */}
             <div
-                style={{ position: 'fixed', left: 0, top: 0, width: '100%', opacity: 0, pointerEvents: 'none', zIndex: -1 }}
+                style={{
+                    position: 'fixed',
+                    left: 0,
+                    top: 0,
+                    width: '100%',
+                    opacity: 0,
+                    pointerEvents: 'none',
+                    zIndex: -1,
+                }}
                 aria-hidden
             >
                 <InvoicePrintView
-                    invoice={{
-                        invoiceNumber: watch().invoiceNumber || generateInvoiceNumber(watch().customerName || 'TC', existingNumbers),
-                        customerName: watch().customerName || '',
-                        salesRepresentative: watch().salesRepresentative || '',
-                        invoiceDate: new Date().toISOString(),
-                        items: watch().items || [defaultItem()],
-                        subtotal,
-                        total,
-                        depositAmount: Number(watchedDeposit) || 0,
-                        paymentStatus: watchedPaymentReceived
-                            ? 'paid'
-                            : Number(watchedDeposit) > 0
-                                ? 'deposit'
-                                : 'pending',
-                    } as Invoice}
+                    invoice={
+                        {
+                            orderId: watch().orderId || initialOrderIdRef.current,
+                            invoiceNumber:
+                                watch().invoiceNumber ||
+                                generateInvoiceNumber(
+                                    watch().customerName || 'TC',
+                                    existingNumbers
+                                ),
+                            customerName: watch().customerName || '',
+                            salesRepresentative: watch().salesRepresentative || '',
+                            invoiceDate: new Date().toISOString(),
+                            items: watch().items || [defaultItem()],
+                            subtotal,
+                            total,
+                            depositAmount: Number(watchedDeposit) || 0,
+                            paymentStatus: watchedPaymentReceived
+                                ? 'paid'
+                                : Number(watchedDeposit) > 0
+                                    ? 'deposit'
+                                    : 'pending',
+                        } as SheetInvoice
+                    }
                     ref={pdfRef}
                 />
             </div>
