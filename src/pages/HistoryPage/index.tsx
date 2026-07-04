@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useInvoiceStore } from 'store/invoiceStore';
 import ConfirmDialog from 'components/ConfirmDialog/ConfirmDialog';
@@ -33,12 +33,22 @@ type SheetRow = {
     paymentStatus?: string;
     orderStatus?: string;
     orderShipStatus?: string;
+    orderShipDcc?: string;
     customerShipStatus?: string;
     customerShip?: string;
 };
 
+type SheetResponse = {
+    success?: boolean;
+    message?: string;
+    data?: SheetRow[];
+};
+
 const GOOGLE_SHEET_WEB_APP_URL =
     'https://script.google.com/macros/s/AKfycbw89yajiSI_8Y_jBBWS_GeUSUHKuf_bO7O6Tk4KbrRfn8KwzJ9g_QPR0WUeY536qohLxg/exec';
+
+const HISTORY_REFRESH_MS = 25000;
+const SHEET_REQUEST_TIMEOUT_MS = 12000;
 
 const cleanText = (value: unknown): string => String(value ?? '').trim();
 
@@ -88,6 +98,40 @@ const getInvoiceKey = (invoice: SheetInvoice): string => {
     return cleanText(invoice.orderId || invoice.invoiceNumber);
 };
 
+const mergeInvoices = (localInvoices: SheetInvoice[], sheetInvoices: SheetInvoice[]): SheetInvoice[] => {
+    const merged = new Map<string, SheetInvoice>();
+
+    localInvoices.forEach((invoice) => {
+        const key = getInvoiceKey(invoice);
+        if (key) merged.set(key, invoice);
+    });
+
+    sheetInvoices.forEach((sheetInvoice) => {
+        const key = getInvoiceKey(sheetInvoice);
+        if (!key) return;
+
+        const localInvoice = merged.get(key);
+
+        merged.set(key, {
+            ...(localInvoice || {}),
+            ...sheetInvoice,
+            customerShipStatus:
+                localInvoice?.customerShipStatus === 'shipped' || sheetInvoice.customerShipStatus === 'shipped'
+                    ? 'shipped'
+                    : 'pending',
+            orderShipStatus: cleanText(sheetInvoice.orderShipStatus) || localInvoice?.orderShipStatus || '',
+        });
+    });
+
+    return Array.from(merged.values())
+        .filter((invoice) => normalizeOrderStatus(invoice.orderStatus) !== 'Cancel')
+        .sort((a, b) => {
+            const dateA = new Date(a.invoiceDate).getTime();
+            const dateB = new Date(b.invoiceDate).getTime();
+            return dateB - dateA;
+        });
+};
+
 const groupSheetRowsToInvoices = (rows: SheetRow[]): SheetInvoice[] => {
     const grouped = new Map<string, SheetInvoice>();
 
@@ -95,7 +139,6 @@ const groupSheetRowsToInvoices = (rows: SheetRow[]): SheetInvoice[] => {
         const orderStatus = normalizeOrderStatus(row.orderStatus);
         const customerShipStatus = normalizeCustomerShipStatus(row.customerShipStatus || row.customerShip);
 
-        // Cancel orders sheet me rahenge, lekin app history me show nahi honge.
         if (orderStatus === 'Cancel') return;
 
         const orderId = cleanText(row.orderId);
@@ -107,6 +150,7 @@ const groupSheetRowsToInvoices = (rows: SheetRow[]): SheetInvoice[] => {
         const qty = toNumber(row.qty);
         const price = toNumber(row.price);
         const rowTotal = toNumber(row.total) || qty * price;
+        const orderShipStatus = cleanText(row.orderShipStatus || row.orderShipDcc);
 
         const item: InvoiceItem = {
             id: cleanText(row.itemId) || `${key}-${grouped.get(key)?.items.length ?? 0}`,
@@ -122,9 +166,8 @@ const groupSheetRowsToInvoices = (rows: SheetRow[]): SheetInvoice[] => {
             existing.subtotal += rowTotal;
             existing.total += rowTotal;
 
-            // Agar kisi row me latest ship status filled hai to card pe wahi show karo.
-            if (cleanText(row.orderShipStatus)) {
-                existing.orderShipStatus = cleanText(row.orderShipStatus);
+            if (orderShipStatus) {
+                existing.orderShipStatus = orderShipStatus;
             }
 
             if (customerShipStatus === 'shipped') {
@@ -146,7 +189,7 @@ const groupSheetRowsToInvoices = (rows: SheetRow[]): SheetInvoice[] => {
             depositAmount: 0,
             paymentStatus: normalizePaymentStatus(row.paymentStatus),
             orderStatus,
-            orderShipStatus: cleanText(row.orderShipStatus),
+            orderShipStatus,
             customerShipStatus,
         });
     });
@@ -170,66 +213,98 @@ const buildHistoryUrl = (salesPerson?: string): string => {
     return `${GOOGLE_SHEET_WEB_APP_URL}?${params.toString()}`;
 };
 
-const cancelInvoiceInGoogleSheet = (invoice: SheetInvoice) => {
+const jsonpRequest = <T,>(url: string): Promise<T> => {
+    return new Promise((resolve, reject) => {
+        const callbackName = `__truecellSheetCallback_${Date.now()}_${Math.random()
+            .toString(36)
+            .slice(2)}`;
+        const script = document.createElement('script');
+
+        const cleanup = () => {
+            window.clearTimeout(timeout);
+            script.remove();
+            delete (window as any)[callbackName];
+        };
+
+        const timeout = window.setTimeout(() => {
+            cleanup();
+            reject(new Error('Google Sheet request timed out'));
+        }, SHEET_REQUEST_TIMEOUT_MS);
+
+        (window as any)[callbackName] = (data: T) => {
+            cleanup();
+            resolve(data);
+        };
+
+        script.onerror = () => {
+            cleanup();
+            reject(new Error('Google Sheet JSONP request failed'));
+        };
+
+        const separator = url.includes('?') ? '&' : '?';
+        script.src = `${url}${separator}callback=${encodeURIComponent(callbackName)}`;
+        document.body.appendChild(script);
+    });
+};
+
+const fetchSheetHistory = async (url: string): Promise<SheetResponse> => {
+    try {
+        const response = await fetch(url, {
+            method: 'GET',
+            cache: 'no-store',
+        });
+
+        return (await response.json()) as SheetResponse;
+    } catch (error) {
+        console.warn('Normal Google Sheet fetch failed. Trying JSONP fallback.', error);
+        return jsonpRequest<SheetResponse>(url);
+    }
+};
+
+const postToGoogleSheet = (payload: Record<string, unknown>) => {
     if (!GOOGLE_SHEET_WEB_APP_URL || GOOGLE_SHEET_WEB_APP_URL.includes('PASTE_')) {
         console.error('Google Sheet Web App URL missing in HistoryPage');
-        return;
+        return Promise.resolve();
     }
 
-    const orderId = cleanText(invoice.orderId || invoice.invoiceNumber);
-    const invoiceNumber = cleanText(invoice.invoiceNumber);
-
-    const payload = {
-        action: 'cancelOrder',
-        orderId,
-        previousOrderId: invoiceNumber,
-        invoiceNo: invoiceNumber,
-        invoiceNumber,
-    };
-
-    console.log('Cancelling order in Google Sheet:', payload);
-
-    void fetch(GOOGLE_SHEET_WEB_APP_URL, {
+    return fetch(GOOGLE_SHEET_WEB_APP_URL, {
         method: 'POST',
         mode: 'no-cors',
         headers: {
             'Content-Type': 'text/plain;charset=utf-8',
         },
         body: JSON.stringify(payload),
-    }).catch((error) => {
-        console.error('Google Sheet cancel failed:', error);
+    })
+        .then(() => undefined)
+        .catch((error) => {
+            console.error('Google Sheet update failed:', error);
+        });
+};
+
+const cancelInvoiceInGoogleSheet = (invoice: SheetInvoice) => {
+    const orderId = cleanText(invoice.orderId || invoice.invoiceNumber);
+    const invoiceNumber = cleanText(invoice.invoiceNumber);
+
+    return postToGoogleSheet({
+        action: 'cancelOrder',
+        orderId,
+        previousOrderId: invoiceNumber,
+        invoiceNo: invoiceNumber,
+        invoiceNumber,
     });
 };
 
 const updateCustomerShipInGoogleSheet = (invoice: SheetInvoice) => {
-    if (!GOOGLE_SHEET_WEB_APP_URL || GOOGLE_SHEET_WEB_APP_URL.includes('PASTE_')) {
-        console.error('Google Sheet Web App URL missing in HistoryPage');
-        return;
-    }
-
     const orderId = cleanText(invoice.orderId || invoice.invoiceNumber);
     const invoiceNumber = cleanText(invoice.invoiceNumber);
 
-    const payload = {
+    return postToGoogleSheet({
         action: 'updateCustomerShipStatus',
         orderId,
         previousOrderId: invoiceNumber,
         invoiceNo: invoiceNumber,
         invoiceNumber,
         customerShipStatus: 'Shipped',
-    };
-
-    console.log('Updating customer ship status in Google Sheet:', payload);
-
-    void fetch(GOOGLE_SHEET_WEB_APP_URL, {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: {
-            'Content-Type': 'text/plain;charset=utf-8',
-        },
-        body: JSON.stringify(payload),
-    }).catch((error) => {
-        console.error('Google Sheet customer ship update failed:', error);
     });
 };
 
@@ -270,38 +345,39 @@ export const HistoryPage: React.FC = () => {
     const updateInHistory = useInvoiceStore((s: any) => s.updateInHistory);
 
     const [sheetInvoices, setSheetInvoices] = useState<SheetInvoice[]>([]);
-    const [sheetLoaded, setSheetLoaded] = useState(false);
     const [isSyncing, setIsSyncing] = useState(false);
     const [cancelTarget, setCancelTarget] = useState<SheetInvoice | null>(null);
     const [shareInvoice, setShareInvoice] = useState<SheetInvoice | null>(null);
+    const [hiddenInvoiceKeys, setHiddenInvoiceKeys] = useState<string[]>([]);
 
     const pdfRef = useRef<HTMLDivElement | null>(null);
+    const hasShownSyncWarningRef = useRef(false);
 
-    const localRepInvoices = invoiceHistory.filter((inv) => {
-        const isSameRep = inv.salesRepresentative === loggedInRep?.name;
-        const isActive = normalizeOrderStatus(inv.orderStatus) !== 'Cancel';
-        return isSameRep && isActive;
-    });
+    const localRepInvoices = useMemo(() => {
+        return invoiceHistory.filter((inv) => {
+            const isSameRep = cleanText(inv.salesRepresentative).toLowerCase() === cleanText(loggedInRep?.name).toLowerCase();
+            const isActive = normalizeOrderStatus(inv.orderStatus) !== 'Cancel';
+            return isSameRep && isActive;
+        });
+    }, [invoiceHistory, loggedInRep?.name]);
 
-    const repInvoices = sheetLoaded ? sheetInvoices : localRepInvoices;
+    const repInvoices = useMemo(() => {
+        const hiddenSet = new Set(hiddenInvoiceKeys);
+        return mergeInvoices(localRepInvoices, sheetInvoices).filter(
+            (invoice) => !hiddenSet.has(getInvoiceKey(invoice))
+        );
+    }, [hiddenInvoiceKeys, localRepInvoices, sheetInvoices]);
 
     const totalAmount = repInvoices.reduce((sum, inv) => sum + inv.total, 0);
 
-    useEffect(() => {
-        if (!loggedInRep?.name) return;
+    const loadHistoryFromSheet = useCallback(
+        async (options?: { showWarning?: boolean }) => {
+            if (!loggedInRep?.name) return;
 
-        let isMounted = true;
-
-        const loadHistoryFromSheet = async () => {
             setIsSyncing(true);
 
             try {
-                const response = await fetch(buildHistoryUrl(loggedInRep.name), {
-                    method: 'GET',
-                    cache: 'no-store',
-                });
-
-                const json = await response.json();
+                const json = await fetchSheetHistory(buildHistoryUrl(loggedInRep.name));
 
                 if (!json?.success || !Array.isArray(json.data)) {
                     throw new Error(json?.message || 'Invalid Google Sheet response');
@@ -309,35 +385,49 @@ export const HistoryPage: React.FC = () => {
 
                 const invoices = groupSheetRowsToInvoices(json.data as SheetRow[]);
 
-                if (!isMounted) return;
-
                 setSheetInvoices(invoices);
-                setSheetLoaded(true);
 
-                // Local storage bhi update kar do taake offline/open reload me latest data rahe.
                 invoices.forEach((invoice) => {
                     updateInHistory(invoice as Invoice);
                 });
+
+                hasShownSyncWarningRef.current = false;
             } catch (error) {
                 console.error('Failed to load Google Sheet history:', error);
 
-                if (!isMounted) return;
-
-                setSheetLoaded(false);
-                push('Could not sync Google Sheet history. Showing local history.');
-            } finally {
-                if (isMounted) {
-                    setIsSyncing(false);
+                if (options?.showWarning && !hasShownSyncWarningRef.current) {
+                    hasShownSyncWarningRef.current = true;
+                    push('Google Sheet sync slow hai. Local history visible rahegi.');
                 }
+            } finally {
+                setIsSyncing(false);
             }
+        },
+        [loggedInRep?.name, push, updateInHistory]
+    );
+
+    useEffect(() => {
+        if (!loggedInRep?.name) return;
+
+        void loadHistoryFromSheet({ showWarning: true });
+
+        const intervalId = window.setInterval(() => {
+            void loadHistoryFromSheet();
+        }, HISTORY_REFRESH_MS);
+
+        const handleFocus = () => {
+            void loadHistoryFromSheet();
         };
 
-        void loadHistoryFromSheet();
+        document.addEventListener('visibilitychange', handleFocus);
+        window.addEventListener('focus', handleFocus);
 
         return () => {
-            isMounted = false;
+            window.clearInterval(intervalId);
+            document.removeEventListener('visibilitychange', handleFocus);
+            window.removeEventListener('focus', handleFocus);
         };
-    }, [loggedInRep?.name, push, updateInHistory]);
+    }, [loadHistoryFromSheet, loggedInRep?.name]);
 
     const handleEdit = (invoice: SheetInvoice) => {
         saveInvoice(invoice);
@@ -347,14 +437,16 @@ export const HistoryPage: React.FC = () => {
     const confirmCancel = () => {
         if (!cancelTarget) return;
 
-        // ✅ Sheet me Order Status = Cancel hoga. Sheet rows delete nahi hongi.
-        cancelInvoiceInGoogleSheet(cancelTarget);
+        const key = getInvoiceKey(cancelTarget);
 
-        // ✅ App history se card remove hoga.
+        void cancelInvoiceInGoogleSheet(cancelTarget).then(() => {
+            window.setTimeout(() => void loadHistoryFromSheet(), 1500);
+            window.setTimeout(() => void loadHistoryFromSheet(), 5000);
+        });
+
         deleteFromHistory(cancelTarget.invoiceNumber);
-        setSheetInvoices((current) =>
-            current.filter((invoice) => getInvoiceKey(invoice) !== getInvoiceKey(cancelTarget))
-        );
+        setHiddenInvoiceKeys((current) => (current.includes(key) ? current : [...current, key]));
+        setSheetInvoices((current) => current.filter((invoice) => getInvoiceKey(invoice) !== key));
 
         setCancelTarget(null);
         push('Order cancelled successfully');
@@ -366,7 +458,10 @@ export const HistoryPage: React.FC = () => {
             customerShipStatus: 'shipped',
         };
 
-        updateCustomerShipInGoogleSheet(updatedInvoice);
+        void updateCustomerShipInGoogleSheet(updatedInvoice).then(() => {
+            window.setTimeout(() => void loadHistoryFromSheet(), 1500);
+            window.setTimeout(() => void loadHistoryFromSheet(), 5000);
+        });
 
         setSheetInvoices((current) =>
             current.map((item) =>
