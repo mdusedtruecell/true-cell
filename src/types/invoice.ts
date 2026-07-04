@@ -15,4 +15,7 @@ export interface Invoice {
     total: number;
     depositAmount?: number;
     paymentStatus?: 'paid' | 'pending' | 'deposit';
+    orderStatus?: string;
+    orderShipStatus?: string;
+    customerShipStatus?: 'pending' | 'shipped';
 }

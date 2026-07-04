@@ -16,6 +16,7 @@ type SheetInvoice = Invoice & {
     orderId?: string;
     orderStatus?: string;
     orderShipStatus?: string;
+    customerShipStatus?: 'pending' | 'shipped';
 };
 
 type SheetRow = {
@@ -32,6 +33,8 @@ type SheetRow = {
     paymentStatus?: string;
     orderStatus?: string;
     orderShipStatus?: string;
+    customerShipStatus?: string;
+    customerShip?: string;
 };
 
 const GOOGLE_SHEET_WEB_APP_URL =
@@ -62,6 +65,10 @@ const normalizeOrderStatus = (value?: string): string => {
     return 'Active';
 };
 
+const normalizeCustomerShipStatus = (value?: string): 'pending' | 'shipped' => {
+    return cleanText(value).toLowerCase() === 'shipped' ? 'shipped' : 'pending';
+};
+
 const parseSheetDate = (value?: string): string => {
     const raw = cleanText(value);
 
@@ -86,6 +93,7 @@ const groupSheetRowsToInvoices = (rows: SheetRow[]): SheetInvoice[] => {
 
     rows.forEach((row) => {
         const orderStatus = normalizeOrderStatus(row.orderStatus);
+        const customerShipStatus = normalizeCustomerShipStatus(row.customerShipStatus || row.customerShip);
 
         // Cancel orders sheet me rahenge, lekin app history me show nahi honge.
         if (orderStatus === 'Cancel') return;
@@ -119,6 +127,10 @@ const groupSheetRowsToInvoices = (rows: SheetRow[]): SheetInvoice[] => {
                 existing.orderShipStatus = cleanText(row.orderShipStatus);
             }
 
+            if (customerShipStatus === 'shipped') {
+                existing.customerShipStatus = 'shipped';
+            }
+
             return;
         }
 
@@ -135,6 +147,7 @@ const groupSheetRowsToInvoices = (rows: SheetRow[]): SheetInvoice[] => {
             paymentStatus: normalizePaymentStatus(row.paymentStatus),
             orderStatus,
             orderShipStatus: cleanText(row.orderShipStatus),
+            customerShipStatus,
         });
     });
 
@@ -187,6 +200,64 @@ const cancelInvoiceInGoogleSheet = (invoice: SheetInvoice) => {
         console.error('Google Sheet cancel failed:', error);
     });
 };
+
+const updateCustomerShipInGoogleSheet = (invoice: SheetInvoice) => {
+    if (!GOOGLE_SHEET_WEB_APP_URL || GOOGLE_SHEET_WEB_APP_URL.includes('PASTE_')) {
+        console.error('Google Sheet Web App URL missing in HistoryPage');
+        return;
+    }
+
+    const orderId = cleanText(invoice.orderId || invoice.invoiceNumber);
+    const invoiceNumber = cleanText(invoice.invoiceNumber);
+
+    const payload = {
+        action: 'updateCustomerShipStatus',
+        orderId,
+        previousOrderId: invoiceNumber,
+        invoiceNo: invoiceNumber,
+        invoiceNumber,
+        customerShipStatus: 'Shipped',
+    };
+
+    console.log('Updating customer ship status in Google Sheet:', payload);
+
+    void fetch(GOOGLE_SHEET_WEB_APP_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: {
+            'Content-Type': 'text/plain;charset=utf-8',
+        },
+        body: JSON.stringify(payload),
+    }).catch((error) => {
+        console.error('Google Sheet customer ship update failed:', error);
+    });
+};
+
+const ShipIcon = () => (
+    <svg
+        width="20"
+        height="20"
+        viewBox="0 0 24 24"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+        aria-hidden="true"
+    >
+        <path
+            d="M3 7H14V16H3V7Z"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinejoin="round"
+        />
+        <path
+            d="M14 10H18.2L21 13.2V16H14V10Z"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinejoin="round"
+        />
+        <circle cx="7" cy="18" r="1.8" stroke="currentColor" strokeWidth="1.8" />
+        <circle cx="18" cy="18" r="1.8" stroke="currentColor" strokeWidth="1.8" />
+    </svg>
+);
 
 export const HistoryPage: React.FC = () => {
     const navigate = useNavigate();
@@ -287,6 +358,26 @@ export const HistoryPage: React.FC = () => {
 
         setCancelTarget(null);
         push('Order cancelled successfully');
+    };
+
+    const handleCustomerShip = (invoice: SheetInvoice) => {
+        const updatedInvoice: SheetInvoice = {
+            ...invoice,
+            customerShipStatus: 'shipped',
+        };
+
+        updateCustomerShipInGoogleSheet(updatedInvoice);
+
+        setSheetInvoices((current) =>
+            current.map((item) =>
+                getInvoiceKey(item) === getInvoiceKey(updatedInvoice)
+                    ? updatedInvoice
+                    : item
+            )
+        );
+
+        updateInHistory(updatedInvoice as Invoice);
+        push('Customer ship marked as shipped');
     };
 
     const handleShare = (invoice: SheetInvoice) => {
@@ -451,15 +542,16 @@ export const HistoryPage: React.FC = () => {
                                     </button>
 
                                     <button
-                                        className="h-action-btn h-action-btn--del"
-                                        onClick={() => setCancelTarget(inv)}
+                                        className="h-action-btn h-action-btn--ship"
+                                        onClick={() => handleCustomerShip(inv)}
+                                        title={
+                                            inv.customerShipStatus === 'shipped'
+                                                ? 'Already shipped'
+                                                : 'Mark customer ship as shipped'
+                                        }
                                     >
-                                        Cancel
-                                        <img
-                                            src={deleteIcon}
-                                            alt=""
-                                            style={{ width: 20, height: 20 }}
-                                        />
+                                        Ship
+                                        <ShipIcon />
                                     </button>
 
                                     <button
@@ -469,6 +561,18 @@ export const HistoryPage: React.FC = () => {
                                         Share
                                         <img
                                             src={whatsappIcon}
+                                            alt=""
+                                            style={{ width: 20, height: 20 }}
+                                        />
+                                    </button>
+
+                                    <button
+                                        className="h-action-btn h-action-btn--del"
+                                        onClick={() => setCancelTarget(inv)}
+                                    >
+                                        Cancel
+                                        <img
+                                            src={deleteIcon}
                                             alt=""
                                             style={{ width: 20, height: 20 }}
                                         />

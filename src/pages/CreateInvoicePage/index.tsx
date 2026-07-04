@@ -20,6 +20,7 @@ import redDelete from '../../assets/row_delete.png';
 
 type SheetInvoice = Invoice & {
     orderId?: string;
+    customerShipStatus?: 'pending' | 'shipped';
 };
 
 type FormValues = SheetInvoice & {
@@ -112,6 +113,7 @@ const syncInvoiceToGoogleSheet = (
         customer: invoice.customerName,
         salesPerson: invoice.salesRepresentative,
         paymentStatus: invoice.paymentStatus,
+        customerShipStatus: invoice.customerShipStatus === 'shipped' ? 'shipped' : undefined,
 
         items: invoice.items.map((item) => ({
             id: item.id || uuid(),
@@ -209,6 +211,7 @@ export const CreateInvoicePage: React.FC = () => {
             subtotal: editInvoice?.subtotal ?? draft?.subtotal ?? 0,
             total: editInvoice?.total ?? draft?.total ?? 0,
             depositAmount: editInvoice?.depositAmount ?? draft?.depositAmount ?? 0,
+            customerShipStatus: editInvoice?.customerShipStatus ?? draft?.customerShipStatus ?? 'pending',
             paymentReceived: editInvoice
                 ? editInvoice.paymentStatus === 'paid'
                 : draft?.paymentStatus === 'paid',
@@ -261,6 +264,7 @@ export const CreateInvoicePage: React.FC = () => {
             subtotal: 0,
             total: 0,
             depositAmount: 0,
+            customerShipStatus: 'pending',
             paymentReceived: false,
         } as FormValues);
 
@@ -305,6 +309,7 @@ export const CreateInvoicePage: React.FC = () => {
                 : Number(data.depositAmount) > 0
                     ? 'deposit'
                     : 'pending',
+            customerShipStatus: data.customerShipStatus || editInvoice?.customerShipStatus || 'pending',
         };
     };
 
@@ -680,6 +685,7 @@ export const CreateInvoicePage: React.FC = () => {
                                 : Number(watchedDeposit) > 0
                                     ? 'deposit'
                                     : 'pending',
+                            customerShipStatus: editInvoice?.customerShipStatus || 'pending',
                         } as SheetInvoice
                     }
                     ref={pdfRef}
