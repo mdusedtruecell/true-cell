@@ -534,13 +534,22 @@ export const CreateInvoicePage: React.FC = () => {
                                                 }
                                                 type="number"
                                                 {...register(`items.${idx}.price` as const, {
-                                                    valueAsNumber: true,
-                                                    required: 'Price required',
-                                                    min: {
-                                                        value: 0.01,
-                                                        message: 'Min 0.01',
-                                                    },
-                                                })}
+    valueAsNumber: true,
+    required: 'Price required',
+    validate: (value) => {
+        const price = Number(value);
+
+        if (!Number.isFinite(price)) {
+            return 'Price required';
+        }
+
+        if (price === 0) {
+            return 'Price cannot be 0';
+        }
+
+        return true;
+    },
+})}
                                                 defaultValue={(field as any).price ?? ''}
                                                 placeholder="0"
                                                 onInput={() => {
