@@ -347,6 +347,7 @@ export const HistoryPage: React.FC = () => {
     const [sheetInvoices, setSheetInvoices] = useState<SheetInvoice[]>([]);
     const [isSyncing, setIsSyncing] = useState(false);
     const [cancelTarget, setCancelTarget] = useState<SheetInvoice | null>(null);
+    const [shipTarget, setShipTarget] = useState<SheetInvoice | null>(null);
     const [shareInvoice, setShareInvoice] = useState<SheetInvoice | null>(null);
     const [hiddenInvoiceKeys, setHiddenInvoiceKeys] = useState<string[]>([]);
 
@@ -452,27 +453,41 @@ export const HistoryPage: React.FC = () => {
         push('Order cancelled successfully');
     };
 
-    const handleCustomerShip = (invoice: SheetInvoice) => {
+    const confirmCustomerShip = () => {
+        if (!shipTarget) return;
+
         const updatedInvoice: SheetInvoice = {
-            ...invoice,
+            ...shipTarget,
             customerShipStatus: 'shipped',
         };
+
+        const updatedKey = getInvoiceKey(updatedInvoice);
 
         void updateCustomerShipInGoogleSheet(updatedInvoice).then(() => {
             window.setTimeout(() => void loadHistoryFromSheet(), 1500);
             window.setTimeout(() => void loadHistoryFromSheet(), 5000);
         });
 
-        setSheetInvoices((current) =>
-            current.map((item) =>
-                getInvoiceKey(item) === getInvoiceKey(updatedInvoice)
-                    ? updatedInvoice
-                    : item
-            )
-        );
+        setSheetInvoices((current) => {
+            let found = false;
+
+            const next = current.map((item) => {
+                if (getInvoiceKey(item) !== updatedKey) return item;
+
+                found = true;
+
+                return {
+                    ...item,
+                    customerShipStatus: 'shipped' as const,
+                };
+            });
+
+            return found ? next : [...next, updatedInvoice];
+        });
 
         updateInHistory(updatedInvoice as Invoice);
-        push('Customer ship marked as shipped');
+        setShipTarget(null);
+        push('Order marked as shipped');
     };
 
     const handleShare = (invoice: SheetInvoice) => {
@@ -555,6 +570,19 @@ export const HistoryPage: React.FC = () => {
         return { ...base, background: '#777777' };
     };
 
+    const customerShippedStyle = (): React.CSSProperties => {
+        return {
+            fontSize: 12,
+            fontWeight: 600,
+            padding: '4px 10px',
+            borderRadius: 5,
+            color: '#fff',
+            background: '#188a3b',
+            minWidth: 90,
+            textAlign: 'center',
+        };
+    };
+
     return (
         <div className="page history-page">
             <div className="history-header">
@@ -612,6 +640,12 @@ export const HistoryPage: React.FC = () => {
                                                 {inv.orderShipStatus}
                                             </span>
                                         )}
+
+                                        {inv.customerShipStatus === 'shipped' && (
+                                            <span style={customerShippedStyle()}>
+                                                Shipped
+                                            </span>
+                                        )}
                                     </div>
                                 </div>
 
@@ -638,7 +672,7 @@ export const HistoryPage: React.FC = () => {
 
                                     <button
                                         className="h-action-btn h-action-btn--ship"
-                                        onClick={() => handleCustomerShip(inv)}
+                                        onClick={() => setShipTarget(inv)}
                                         title={
                                             inv.customerShipStatus === 'shipped'
                                                 ? 'Already shipped'
@@ -713,6 +747,15 @@ export const HistoryPage: React.FC = () => {
                 confirmLabel="Cancel Order"
                 onConfirm={confirmCancel}
                 onClose={() => setCancelTarget(null)}
+            />
+
+            <ConfirmDialog
+                open={!!shipTarget}
+                title="Ship Order"
+                description="Do you want to mark this order as shipped? After confirmation, this order will show as Shipped in invoice history and Google Sheet."
+                confirmLabel="Shipped"
+                onConfirm={confirmCustomerShip}
+                onClose={() => setShipTarget(null)}
             />
         </div>
     );
