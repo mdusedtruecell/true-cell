@@ -96,7 +96,43 @@ export const normalizeOrderShipStatus = (value?: string): string => {
 };
 
 export const formatDateForSheet = (dateValue?: string) => {
-    const date = dateValue ? new Date(dateValue) : new Date();
+    let raw = cleanText(dateValue)
+        .replace(/-at\s+at\s+/gi, ' at ')
+        .replace(/-at\s+/gi, ' at ')
+        .replace(/\s+at\s+at\s+/gi, ' at ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const existingDateTime = raw.match(
+        /^(\d{1,2})[-\s]([A-Za-z]{3})[-\s](\d{4})(?:\s+at\s+|\s+)(\d{1,2}):(\d{2})$/i
+    );
+
+    if (existingDateTime) {
+        const [, ddRaw, monRaw, yyyy, hhRaw, mm] = existingDateTime;
+        const mon = monRaw.charAt(0).toUpperCase() + monRaw.slice(1, 3).toLowerCase();
+
+        return `${ddRaw.padStart(2, '0')}-${mon}-${yyyy} at ${hhRaw.padStart(2, '0')}:${mm}`;
+    }
+
+    const existingDateOnly = raw.match(
+        /^(\d{1,2})[-\s]([A-Za-z]{3})[-\s](\d{4})$/i
+    );
+
+    const nowDubaiTime = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Dubai',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+    }).format(new Date());
+
+    if (existingDateOnly) {
+        const [, ddRaw, monRaw, yyyy] = existingDateOnly;
+        const mon = monRaw.charAt(0).toUpperCase() + monRaw.slice(1, 3).toLowerCase();
+
+        return `${ddRaw.padStart(2, '0')}-${mon}-${yyyy} at ${nowDubaiTime}`;
+    }
+
+    const date = raw ? new Date(raw) : new Date();
     const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
 
     return new Intl.DateTimeFormat('en-GB', {
@@ -110,54 +146,7 @@ export const formatDateForSheet = (dateValue?: string) => {
     })
         .format(safeDate)
         .replace(',', '')
-        .replaceAll(' ', '-')
-        .replace(/-(\d{2}:\d{2})$/, ' at $1');
-};
-
-const MONTHS: Record<string, string> = {
-    jan: '01',
-    feb: '02',
-    mar: '03',
-    apr: '04',
-    may: '05',
-    jun: '06',
-    jul: '07',
-    aug: '08',
-    sep: '09',
-    oct: '10',
-    nov: '11',
-    dec: '12',
-};
-
-export const parseSheetDate = (value?: string): string => {
-    const raw = cleanText(value);
-
-    if (!raw) return new Date().toISOString();
-
-    const direct = new Date(raw);
-
-    if (!Number.isNaN(direct.getTime())) {
-        return direct.toISOString();
-    }
-
-    const match = raw.match(/^(\d{1,2})[-\s]([A-Za-z]{3})[-\s](\d{4})(?:\s+at\s+|\s+)(\d{1,2}):(\d{2})/i);
-
-    if (match) {
-        const [, ddRaw, monRaw, yyyy, hhRaw, mm] = match;
-        const month = MONTHS[monRaw.toLowerCase()];
-
-        if (month) {
-            const dd = ddRaw.padStart(2, '0');
-            const hh = hhRaw.padStart(2, '0');
-            const parsed = new Date(`${yyyy}-${month}-${dd}T${hh}:${mm}:00+04:00`);
-
-            if (!Number.isNaN(parsed.getTime())) {
-                return parsed.toISOString();
-            }
-        }
-    }
-
-    return new Date().toISOString();
+        .replace(/^(\d{2}) ([A-Za-z]{3}) (\d{4}) (\d{2}):(\d{2})$/, '$1-$2-$3 at $4:$5');
 };
 
 export const getInvoiceKey = (invoice: SheetInvoice): string => {
