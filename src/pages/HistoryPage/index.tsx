@@ -13,7 +13,6 @@ import {
     buildHistoryUrl,
     cancelInvoiceInGoogleSheet,
     cleanText,
-    fetchSheetHistory,
     getInvoiceKey,
     getSortTimestamp,
     groupSheetRowsToInvoices,
@@ -25,6 +24,7 @@ import plusIcon from '../../assets/plus_icon.png';
 import editIcon from '../../assets/edit_i.png';
 
 const HISTORY_REFRESH_MS = 10000;
+const HISTORY_TIMEOUT_MS = 12000;
 
 const ShipIcon = () => (
     <svg
@@ -83,23 +83,54 @@ export const HistoryPage: React.FC = () => {
 
     const totalAmount = repInvoices.reduce((sum, inv) => sum + inv.total, 0);
 
+    const fetchHistoryFromApi = async (salesPerson: string): Promise<SheetInvoice[]> => {
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), HISTORY_TIMEOUT_MS);
+
+        try {
+            const response = await fetch(buildHistoryUrl(salesPerson), {
+                method: 'GET',
+                cache: 'no-store',
+                signal: controller.signal,
+                headers: {
+                    Accept: 'application/json',
+                },
+            });
+
+            const json = await response.json().catch(() => ({
+                success: false,
+                message: 'Invalid backend response',
+                data: [],
+            }));
+
+            if (!response.ok || json?.success === false || !Array.isArray(json.data)) {
+                throw new Error(json?.message || 'Could not load invoice history');
+            }
+
+            return groupSheetRowsToInvoices(json.data as SheetRow[]).sort(
+                (a, b) => getSortTimestamp(b) - getSortTimestamp(a)
+            );
+        } finally {
+            window.clearTimeout(timeoutId);
+        }
+    };
+
     const loadHistoryFromSheet = useCallback(
         async () => {
-            if (!loggedInRep?.name) return;
+            if (!loggedInRep?.name) {
+                setHasLoadedHistory(true);
+                setIsSyncing(false);
+                return;
+            }
+
             if (loadingRef.current) return;
 
             loadingRef.current = true;
             setIsSyncing(true);
+            setHistoryError('');
 
             try {
-                const json = await fetchSheetHistory(buildHistoryUrl(loggedInRep.name));
-
-                if (!json?.success || !Array.isArray(json.data)) {
-                    throw new Error(json?.message || 'Invalid backend response');
-                }
-
-                const invoices = groupSheetRowsToInvoices(json.data as SheetRow[])
-                    .sort((a, b) => getSortTimestamp(b) - getSortTimestamp(a));
+                const invoices = await fetchHistoryFromApi(loggedInRep.name);
 
                 setSheetInvoices(invoices);
                 setHasLoadedHistory(true);
@@ -117,7 +148,7 @@ export const HistoryPage: React.FC = () => {
                     updateInHistory(invoice as Invoice);
                 });
             } catch (error) {
-                console.error('Failed to load invoice history:', error);
+                console.error('History sync failed:', error);
                 setHistoryError('Could not load latest invoices. Please refresh and try again.');
                 setHasLoadedHistory(true);
             } finally {
@@ -129,7 +160,11 @@ export const HistoryPage: React.FC = () => {
     );
 
     useEffect(() => {
-        if (!loggedInRep?.name) return;
+        if (!loggedInRep?.name) {
+            setHasLoadedHistory(true);
+            setIsSyncing(false);
+            return;
+        }
 
         void loadHistoryFromSheet();
 
@@ -175,10 +210,15 @@ export const HistoryPage: React.FC = () => {
         setCancelTarget(null);
         push('Order cancelled successfully');
 
-        void cancelInvoiceInGoogleSheet(cancelTarget).then(() => {
-            window.setTimeout(() => void loadHistoryFromSheet(), 1200);
-            window.setTimeout(() => void loadHistoryFromSheet(), 3500);
-        });
+        void cancelInvoiceInGoogleSheet(cancelTarget)
+            .then(() => {
+                window.setTimeout(() => void loadHistoryFromSheet(), 1200);
+                window.setTimeout(() => void loadHistoryFromSheet(), 3500);
+            })
+            .catch((error) => {
+                console.error('Cancel sync failed:', error);
+                push('Order cancelled locally. Backend sync failed, please refresh.');
+            });
     };
 
     const confirmCustomerShip = () => {
@@ -210,10 +250,15 @@ export const HistoryPage: React.FC = () => {
         setShipTarget(null);
         push('Order marked as shipped');
 
-        void updateCustomerShipInGoogleSheet(updatedInvoice).then(() => {
-            window.setTimeout(() => void loadHistoryFromSheet(), 1200);
-            window.setTimeout(() => void loadHistoryFromSheet(), 3500);
-        });
+        void updateCustomerShipInGoogleSheet(updatedInvoice)
+            .then(() => {
+                window.setTimeout(() => void loadHistoryFromSheet(), 1200);
+                window.setTimeout(() => void loadHistoryFromSheet(), 3500);
+            })
+            .catch((error) => {
+                console.error('Ship sync failed:', error);
+                push('Order marked shipped locally. Backend sync failed, please refresh.');
+            });
     };
 
     const handleShare = (invoice: SheetInvoice) => {
@@ -249,7 +294,8 @@ export const HistoryPage: React.FC = () => {
                     const message = buildWhatsappMessage(invoice);
                     window.open(`https://wa.me/?text=${encodeURIComponent(message)}`);
                 }
-            } catch {
+            } catch (error) {
+                console.error('Share failed:', error);
                 push('Failed to share invoice');
             } finally {
                 setShareInvoice(null);
@@ -311,7 +357,7 @@ export const HistoryPage: React.FC = () => {
     };
 
     const emptyMessage = () => {
-        if (!hasLoadedHistory || isSyncing) {
+        if (!hasLoadedHistory) {
             return 'Syncing latest invoices...';
         }
 
@@ -345,7 +391,7 @@ export const HistoryPage: React.FC = () => {
                     <div className="history-empty">
                         <p>{emptyMessage()}</p>
 
-                        {hasLoadedHistory && !historyError && !isSyncing && (
+                        {hasLoadedHistory && !historyError && (
                             <p>
                                 Tap <strong>+</strong> to create your first invoice.
                             </p>

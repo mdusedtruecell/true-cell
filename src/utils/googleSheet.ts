@@ -346,6 +346,9 @@ export const fetchSheetHistory = async (url: string): Promise<SheetResponse> => 
     const response = await fetch(url, {
         method: 'GET',
         cache: 'no-store',
+        headers: {
+            Accept: 'application/json',
+        },
     });
 
     const json = (await response.json().catch(() => ({
@@ -361,25 +364,19 @@ export const fetchSheetHistory = async (url: string): Promise<SheetResponse> => 
 };
 
 export const postToGoogleSheet = async (payload: Record<string, unknown>) => {
-    const response = await fetch('/api/sheet-save', {
+    await fetch(GOOGLE_SHEET_WEB_APP_URL, {
         method: 'POST',
+        mode: 'no-cors',
         cache: 'no-store',
         headers: {
-            'Content-Type': 'application/json',
+            'Content-Type': 'text/plain;charset=utf-8',
         },
         body: JSON.stringify(payload),
     });
 
-    const json = await response.json().catch(() => ({
-        success: false,
-        message: 'Invalid backend response',
-    }));
-
-    if (!response.ok || json?.success === false) {
-        throw new Error(json?.message || 'Could not save invoice');
-    }
-
-    return json;
+    return {
+        success: true,
+    };
 };
 
 const normalizeInvoiceItems = (invoice: SheetInvoice): InvoiceItem[] => {
