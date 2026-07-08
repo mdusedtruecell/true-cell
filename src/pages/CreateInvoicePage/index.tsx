@@ -67,9 +67,6 @@ export const CreateInvoicePage: React.FC = () => {
     const invoiceHistory: Invoice[] = useInvoiceStore((s: any) => s.invoiceHistory);
 
     const pdfRef = useRef<HTMLDivElement | null>(null);
-    const saveLockRef = useRef(false);
-    const hasSavedRef = useRef(false);
-
     const { push } = useToast();
 
     const draft = isEditing ? null : (getDraft<Partial<SheetInvoice>>(DRAFT_KEY) ?? null);
@@ -120,19 +117,6 @@ export const CreateInvoicePage: React.FC = () => {
 
     const [confirmOpen, setConfirmOpen] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
-    const [hasSavedInvoice, setHasSavedInvoice] = useState(false);
-
-    const markInvoiceSaved = () => {
-        hasSavedRef.current = true;
-        setHasSavedInvoice(true);
-    };
-
-    const resetSaveStatus = () => {
-        saveLockRef.current = false;
-        hasSavedRef.current = false;
-        setIsSaving(false);
-        setHasSavedInvoice(false);
-    };
 
     useEffect(() => {
         if (isEditing) return;
@@ -172,7 +156,7 @@ export const CreateInvoicePage: React.FC = () => {
             paymentReceived: false,
         } as FormValues);
 
-        resetSaveStatus();
+        setIsSaving(false);
         setConfirmOpen(false);
     };
 
@@ -196,7 +180,6 @@ export const CreateInvoicePage: React.FC = () => {
         const orderId = String(
             data.orderId || initialOrderIdRef.current || generateOrderId()
         ).trim();
-
         const nowIso = new Date().toISOString();
 
         initialOrderIdRef.current = orderId;
@@ -222,60 +205,41 @@ export const CreateInvoicePage: React.FC = () => {
     };
 
     const persistInvoice = async (invoice: SheetInvoice): Promise<SheetInvoice> => {
-        const localInvoice: SheetInvoice = {
-            ...invoice,
-            syncStatus: 'pending',
-        };
-
-        saveInvoiceToStore(localInvoice as Invoice);
-        setDraft(`invoice-${localInvoice.invoiceNumber}`, localInvoice);
-        setDraft('last-invoice', localInvoice.invoiceNumber);
-
-        if (isEditing) {
-            updateInHistory(localInvoice as Invoice);
-        } else {
-            addToHistory(localInvoice as Invoice);
-        }
-
-        removeDraft(DRAFT_KEY);
-
-        const finalInvoice: SheetInvoice = {
-            ...localInvoice,
-            syncStatus: 'synced',
-        };
-
-        saveInvoiceToStore(finalInvoice as Invoice);
-        updateInHistory(finalInvoice as Invoice);
-        setDraft(`invoice-${finalInvoice.invoiceNumber}`, finalInvoice);
-        setDraft('last-invoice', finalInvoice.invoiceNumber);
-
-        void syncInvoiceToGoogleSheet(
-            localInvoice,
-            isEditing ? editInvoice : undefined
-        )
-            .then((syncedInvoice) => {
-                const updatedInvoice: SheetInvoice = {
-                    ...finalInvoice,
-                    ...syncedInvoice,
-                    syncStatus: 'synced',
-                };
-
-                saveInvoiceToStore(updatedInvoice as Invoice);
-                updateInHistory(updatedInvoice as Invoice);
-                setDraft(`invoice-${updatedInvoice.invoiceNumber}`, updatedInvoice);
-                setDraft('last-invoice', updatedInvoice.invoiceNumber);
-            })
-            .catch((error) => {
-                console.error('Background Google Sheet save failed:', error);
-
-                updateInHistory({
-                    ...localInvoice,
-                    syncStatus: 'failed',
-                } as Invoice);
-            });
-
-        return finalInvoice;
+    const localInvoice: SheetInvoice = {
+        ...invoice,
+        syncStatus: 'pending',
     };
+
+    saveInvoiceToStore(localInvoice as Invoice);
+    setDraft(`invoice-${localInvoice.invoiceNumber}`, localInvoice);
+    setDraft('last-invoice', localInvoice.invoiceNumber);
+
+    if (isEditing) {
+        updateInHistory(localInvoice as Invoice);
+    } else {
+        addToHistory(localInvoice as Invoice);
+    }
+
+    removeDraft(DRAFT_KEY);
+
+    const syncedInvoice = await syncInvoiceToGoogleSheet(
+        localInvoice,
+        isEditing ? editInvoice : undefined
+    );
+
+    const finalInvoice: SheetInvoice = {
+        ...localInvoice,
+        ...syncedInvoice,
+        syncStatus: 'synced',
+    };
+
+    saveInvoiceToStore(finalInvoice as Invoice);
+    updateInHistory(finalInvoice as Invoice);
+    setDraft(`invoice-${finalInvoice.invoiceNumber}`, finalInvoice);
+    setDraft('last-invoice', finalInvoice.invoiceNumber);
+
+    return finalInvoice;
+};
 
     const onPreview = (data: any) => {
         const number = getUniqueInvoiceNumber(data);
@@ -291,121 +255,102 @@ export const CreateInvoicePage: React.FC = () => {
     };
 
     const onSave = async (data: any) => {
-        if (saveLockRef.current || hasSavedRef.current) return;
+    if (isSaving) return;
 
-        saveLockRef.current = true;
-        setIsSaving(true);
+    const number = getUniqueInvoiceNumber(data);
+    setValue('invoiceNumber', number);
 
-        const number = getUniqueInvoiceNumber(data);
-        setValue('invoiceNumber', number);
+    const invoice = buildInvoice(data, number);
 
-        const invoice = buildInvoice(data, number);
+    setIsSaving(true);
 
-        try {
-            await persistInvoice(invoice);
-            markInvoiceSaved();
-            push('Invoice saved successfully');
-        } catch (error) {
-            console.error('Invoice save failed:', error);
-            push('Could not save invoice. Please check your internet and try again.');
-        } finally {
-            saveLockRef.current = false;
-            setIsSaving(false);
-        }
-    };
+    try {
+        await persistInvoice(invoice);
+        push('Invoice saved successfully');
+    } catch (error) {
+        console.error('Invoice save failed:', error);
+        push('Could not save invoice. Please check your internet and try again.');
+    } finally {
+        setIsSaving(false);
+    }
+};
 
     const shareWhatsApp = async () => {
-        if (saveLockRef.current) {
-            push('Please wait, invoice is saving.');
+    if (isSaving) {
+        push('Please wait, invoice is saving.');
+        return;
+    }
+
+    const itemsCount = fields.length;
+    const fieldNames: string[] = ['customerName', 'salesRepresentative'];
+
+    for (let i = 0; i < itemsCount; i++) {
+        fieldNames.push(`items.${i}.model`, `items.${i}.qty`, `items.${i}.price`);
+    }
+
+    const currentRep = watch().salesRepresentative || selectedRep;
+
+    if (!currentRep) {
+        push('Please select a sales representative before sharing');
+        return;
+    }
+
+    const allValid = await trigger(fieldNames as any);
+
+    if (!allValid) {
+        push('Please fill all required fields before sharing');
+        return;
+    }
+
+    const data = watch();
+    const number = getUniqueInvoiceNumber(data);
+    setValue('invoiceNumber', number);
+
+    const invoice = buildInvoice(data, number);
+
+    setIsSaving(true);
+
+    try {
+        const savedInvoice = await persistInvoice(invoice);
+
+        if (!pdfRef.current) {
+            push('Preparing invoice. Please try again.');
             return;
         }
 
-        const itemsCount = fields.length;
-        const fieldNames: string[] = ['customerName', 'salesRepresentative'];
+        const blob = await generatePdf(pdfRef.current);
+        const file = new File([blob], getPdfFilename(savedInvoice as Invoice), {
+            type: 'application/pdf',
+        });
 
-        for (let i = 0; i < itemsCount; i++) {
-            fieldNames.push(`items.${i}.model`, `items.${i}.qty`, `items.${i}.price`);
-        }
-
-        const currentRep = watch().salesRepresentative || selectedRep;
-
-        if (!currentRep) {
-            push('Please select a sales representative before sharing');
-            return;
-        }
-
-        const allValid = await trigger(fieldNames as any);
-
-        if (!allValid) {
-            push('Please fill all required fields before sharing');
-            return;
-        }
-
-        const data = watch();
-        const number = getUniqueInvoiceNumber(data);
-        setValue('invoiceNumber', number);
-
-        const invoice = buildInvoice(data, number);
-
-        let invoiceForShare: SheetInvoice = invoice;
-
-        if (!hasSavedRef.current) {
-            saveLockRef.current = true;
-            setIsSaving(true);
-
-            try {
-                invoiceForShare = await persistInvoice(invoice);
-                markInvoiceSaved();
-                push('Invoice saved successfully');
-            } catch (error) {
-                console.error('Invoice save before share failed:', error);
-                push('Could not save invoice. Please check your internet and try again.');
-                saveLockRef.current = false;
-                setIsSaving(false);
-                return;
-            } finally {
-                saveLockRef.current = false;
-                setIsSaving(false);
-            }
-        }
-
-        try {
-            if (!pdfRef.current) {
-                push('Preparing invoice. Please try again.');
-                return;
-            }
-
-            const blob = await generatePdf(pdfRef.current);
-            const file = new File([blob], getPdfFilename(invoiceForShare as Invoice), {
-                type: 'application/pdf',
+        // @ts-ignore - browser support depends on device
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            // @ts-ignore - browser support depends on device
+            await navigator.share({
+                files: [file],
+                title: `Invoice ${savedInvoice.invoiceNumber}`,
+                text: `Invoice ${savedInvoice.invoiceNumber}`,
             });
 
-            // @ts-ignore - browser support depends on device
-            if (navigator.canShare && navigator.canShare({ files: [file] })) {
-                // @ts-ignore - browser support depends on device
-                await navigator.share({
-                    files: [file],
-                    title: `Invoice ${invoiceForShare.invoiceNumber}`,
-                    text: `Invoice ${invoiceForShare.invoiceNumber}`,
-                });
-
-                return;
-            }
-
-            const url = URL.createObjectURL(blob);
-            window.open(url, '_blank');
-
-            setTimeout(() => {
-                URL.revokeObjectURL(url);
-            }, 10000);
-
-            const message = buildWhatsappMessage(invoiceForShare as Invoice);
-            window.open(`https://wa.me/?text=${encodeURIComponent(message)}`);
-        } catch (error) {
-            console.error('Failed to generate/share PDF:', error);
-            push('Failed to share invoice');
+            return;
         }
-    };
+
+        const url = URL.createObjectURL(blob);
+        window.open(url, '_blank');
+
+        setTimeout(() => {
+            URL.revokeObjectURL(url);
+        }, 10000);
+
+        const message = buildWhatsappMessage(savedInvoice as Invoice);
+        window.open(`https://wa.me/?text=${encodeURIComponent(message)}`);
+    } catch (error) {
+        console.error('Failed to save/generate/share PDF:', error);
+        push('Could not save or share invoice. Please try again.');
+    } finally {
+        setIsSaving(false);
+    }
+};
 
     const watchedDeposit = watch('depositAmount');
     const watchedPaymentReceived = watch('paymentReceived');
@@ -613,7 +558,6 @@ export const CreateInvoicePage: React.FC = () => {
                             type="button"
                             className="wa"
                             onClick={handleSubmit(onPreview)}
-                            disabled={isSaving}
                         >
                             Preview
                         </button>
@@ -622,17 +566,12 @@ export const CreateInvoicePage: React.FC = () => {
                             type="button"
                             className="btn-save"
                             onClick={handleSubmit(onSave)}
-                            disabled={isSaving || hasSavedInvoice}
-                        >
-                            {isSaving ? 'Saving...' : hasSavedInvoice ? 'Saved' : 'Save'}
-                        </button>
-
-                        <button
-                            type="button"
-                            className="wa"
-                            onClick={shareWhatsApp}
                             disabled={isSaving}
                         >
+                            {isSaving ? 'Saving...' : 'Save'}
+                        </button>
+
+                        <button type="button" className="wa" onClick={shareWhatsApp}>
                             <img src={whatsappicon} alt="WhatsApp" />
                             Share
                         </button>
