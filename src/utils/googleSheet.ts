@@ -444,7 +444,9 @@ export const syncInvoiceToGoogleSheet = async (
         })),
     };
 
-    await postToGoogleSheet(payload);
+    void postToGoogleSheet(payload).catch((error) => {
+        console.error('Background sheet save failed:', error);
+    });
 
     return {
         ...invoice,
@@ -454,7 +456,6 @@ export const syncInvoiceToGoogleSheet = async (
         syncStatus: 'synced',
     };
 };
-
 export const cancelInvoiceInGoogleSheet = (invoice: SheetInvoice) => {
     const orderId = cleanText(invoice.orderId || invoice.invoiceNumber);
     const invoiceNumber = cleanText(invoice.invoiceNumber);
