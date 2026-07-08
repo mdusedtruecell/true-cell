@@ -14,12 +14,16 @@ interface InvoiceStore {
     selectedRepresentative: string | null;
     currentInvoice: Invoice | null;
     invoiceHistory: Invoice[];
+    cancelledInvoiceKeys: string[];
+
     setLoggedInRep: (rep: LoggedInRep | null) => void;
     setRepresentative: (name: string | null) => void;
     saveInvoice: (invoice: Invoice) => void;
     addToHistory: (invoice: Invoice) => void;
     updateInHistory: (invoice: Invoice) => void;
-    deleteFromHistory: (invoiceNumber: string) => void;
+    deleteFromHistory: (invoiceKey: string) => void;
+    addCancelledInvoiceKey: (invoiceKey: string) => void;
+    removeCancelledInvoiceKey: (invoiceKey: string) => void;
     clearInvoice: () => void;
 }
 
@@ -53,6 +57,24 @@ const getInvoiceTimestamp = (invoice: Partial<Invoice>): number => {
     return 0;
 };
 
+const isCanceledInvoice = (invoice: Partial<Invoice>): boolean => {
+    const status = cleanText(invoice.orderStatus).toLowerCase();
+
+    return status === 'cancel' || status === 'cancelled' || status === 'canceled';
+};
+
+const normalizeKeyList = (keys: unknown): string[] => {
+    if (!Array.isArray(keys)) return [];
+
+    return Array.from(
+        new Set(
+            keys
+                .map((key) => cleanText(key))
+                .filter(Boolean)
+        )
+    );
+};
+
 const isInvoice = (value: unknown): value is Invoice => {
     if (!value || typeof value !== 'object') return false;
 
@@ -67,7 +89,31 @@ const isInvoice = (value: unknown): value is Invoice => {
     );
 };
 
-const normalizeHistory = (history: unknown): Invoice[] => {
+const invoiceMatchesKey = (invoice: Partial<Invoice>, keyToMatch: string): boolean => {
+    const cleanKey = cleanText(keyToMatch);
+
+    if (!cleanKey) return false;
+
+    return (
+        getInvoiceKey(invoice) === cleanKey ||
+        cleanText(invoice.invoiceNumber) === cleanKey ||
+        cleanText(invoice.orderId) === cleanKey
+    );
+};
+
+const isInvoiceBlacklisted = (invoice: Partial<Invoice>, cancelledKeys: string[]): boolean => {
+    const key = getInvoiceKey(invoice);
+    const invoiceNumber = cleanText(invoice.invoiceNumber);
+    const orderId = cleanText(invoice.orderId);
+
+    return cancelledKeys.some((cancelledKey) => {
+        return cancelledKey === key || cancelledKey === invoiceNumber || cancelledKey === orderId;
+    });
+};
+
+const normalizeHistory = (history: unknown, cancelledKeys: string[] = []): Invoice[] => {
+    const cleanCancelledKeys = normalizeKeyList(cancelledKeys);
+
     if (!Array.isArray(history)) return [];
 
     const seen = new Set<string>();
@@ -76,10 +122,12 @@ const normalizeHistory = (history: unknown): Invoice[] => {
     for (const item of history) {
         if (!isInvoice(item)) continue;
 
-        const invoiceNumber = item.invoiceNumber.trim();
+        const invoiceNumber = cleanText(item.invoiceNumber);
         const key = getInvoiceKey(item);
 
         if (!invoiceNumber || !key || seen.has(key)) continue;
+        if (isCanceledInvoice(item)) continue;
+        if (isInvoiceBlacklisted(item, cleanCancelledKeys)) continue;
 
         const items = (item.items || []).filter((row) => cleanText(row.model));
 
@@ -99,28 +147,40 @@ const normalizeHistory = (history: unknown): Invoice[] => {
     return cleanHistory.sort((a, b) => getInvoiceTimestamp(b) - getInvoiceTimestamp(a));
 };
 
-const upsertHistory = (history: Invoice[], invoice: Invoice): Invoice[] => {
+const upsertHistory = (history: Invoice[], invoice: Invoice, cancelledKeys: string[] = []): Invoice[] => {
+    const cleanCancelledKeys = normalizeKeyList(cancelledKeys);
     const invoiceNumber = cleanText(invoice.invoiceNumber);
+    const key = getInvoiceKey(invoice);
 
-    const cleanInvoice = {
+    if (!invoiceNumber || !key) {
+        return normalizeHistory(history, cleanCancelledKeys);
+    }
+
+    if (isCanceledInvoice(invoice) || isInvoiceBlacklisted(invoice, cleanCancelledKeys)) {
+        return normalizeHistory(history, cleanCancelledKeys).filter(
+            (item) => !invoiceMatchesKey(item, key) && !invoiceMatchesKey(item, invoiceNumber)
+        );
+    }
+
+    const cleanInvoice: Invoice = {
         ...invoice,
         invoiceNumber,
         orderId: cleanText(invoice.orderId),
         updatedAt: cleanText(invoice.updatedAt) || new Date().toISOString(),
     };
 
-    const cleanHistory = normalizeHistory(history);
-    const key = getInvoiceKey(cleanInvoice);
-
-    return normalizeHistory([
-        cleanInvoice,
-        ...cleanHistory.filter((item) => {
-            return (
-                getInvoiceKey(item) !== key &&
-                cleanText(item.invoiceNumber) !== invoiceNumber
-            );
-        }),
-    ]);
+    return normalizeHistory(
+        [
+            cleanInvoice,
+            ...normalizeHistory(history, cleanCancelledKeys).filter((item) => {
+                return (
+                    getInvoiceKey(item) !== key &&
+                    cleanText(item.invoiceNumber) !== invoiceNumber
+                );
+            }),
+        ],
+        cleanCancelledKeys
+    );
 };
 
 const invoiceStoreStorage: PersistStorage<InvoiceStore> = {
@@ -134,7 +194,7 @@ const invoiceStoreStorage: PersistStorage<InvoiceStore> = {
             try {
                 localStorage.removeItem(name);
             } catch {
-                // Browser localStorage blocked, ignore.
+                // ignore
             }
 
             return null;
@@ -145,7 +205,7 @@ const invoiceStoreStorage: PersistStorage<InvoiceStore> = {
         try {
             localStorage.setItem(name, JSON.stringify(value));
         } catch (error) {
-            console.error(`[invoice-store] Failed to persist "${name}". Browser storage may be full or blocked.`, error);
+            console.error(`[invoice-store] Failed to persist "${name}".`, error);
         }
     },
 
@@ -160,11 +220,12 @@ const invoiceStoreStorage: PersistStorage<InvoiceStore> = {
 
 export const useInvoiceStore = create<InvoiceStore>()(
     persist(
-        (set) => ({
+        (set, get) => ({
             loggedInRep: null,
             selectedRepresentative: null,
             currentInvoice: null,
             invoiceHistory: [],
+            cancelledInvoiceKeys: [],
 
             setLoggedInRep: (rep) =>
                 set({
@@ -184,20 +245,74 @@ export const useInvoiceStore = create<InvoiceStore>()(
 
             addToHistory: (invoice) =>
                 set((state) => ({
-                    invoiceHistory: upsertHistory(state.invoiceHistory, invoice),
+                    invoiceHistory: upsertHistory(
+                        state.invoiceHistory,
+                        invoice,
+                        state.cancelledInvoiceKeys
+                    ),
                 })),
 
             updateInHistory: (invoice) =>
                 set((state) => ({
-                    invoiceHistory: upsertHistory(state.invoiceHistory, invoice),
-                })),
-
-            deleteFromHistory: (invoiceNumber) =>
-                set((state) => ({
-                    invoiceHistory: normalizeHistory(state.invoiceHistory).filter(
-                        (invoice) => cleanText(invoice.invoiceNumber) !== cleanText(invoiceNumber)
+                    invoiceHistory: upsertHistory(
+                        state.invoiceHistory,
+                        invoice,
+                        state.cancelledInvoiceKeys
                     ),
                 })),
+
+            deleteFromHistory: (invoiceKey) =>
+                set((state) => ({
+                    invoiceHistory: normalizeHistory(
+                        state.invoiceHistory,
+                        state.cancelledInvoiceKeys
+                    ).filter((invoice) => !invoiceMatchesKey(invoice, invoiceKey)),
+                })),
+
+            addCancelledInvoiceKey: (invoiceKey) => {
+                const cleanKey = cleanText(invoiceKey);
+
+                if (!cleanKey) return;
+
+                set((state) => {
+                    const nextCancelledKeys = normalizeKeyList([
+                        ...state.cancelledInvoiceKeys,
+                        cleanKey,
+                    ]);
+
+                    return {
+                        cancelledInvoiceKeys: nextCancelledKeys,
+                        invoiceHistory: normalizeHistory(
+                            state.invoiceHistory,
+                            nextCancelledKeys
+                        ).filter((invoice) => !invoiceMatchesKey(invoice, cleanKey)),
+                        currentInvoice:
+                            state.currentInvoice && invoiceMatchesKey(state.currentInvoice, cleanKey)
+                                ? null
+                                : state.currentInvoice,
+                    };
+                });
+            },
+
+            removeCancelledInvoiceKey: (invoiceKey) => {
+                const cleanKey = cleanText(invoiceKey);
+
+                if (!cleanKey) return;
+
+                set((state) => {
+                    const nextCancelledKeys = state.cancelledInvoiceKeys.filter(
+                        (key) => key !== cleanKey
+                    );
+
+                    return {
+                        cancelledInvoiceKeys: nextCancelledKeys,
+                        invoiceHistory: normalizeHistory(
+                            state.invoiceHistory,
+                            nextCancelledKeys
+                        ),
+                    };
+                });
+            },
 
             clearInvoice: () =>
                 set({
@@ -207,25 +322,36 @@ export const useInvoiceStore = create<InvoiceStore>()(
         {
             name: 'invoice-store',
             storage: invoiceStoreStorage,
-            version: 2,
+            version: 3,
 
             partialize: (state) => ({
                 loggedInRep: state.loggedInRep,
                 selectedRepresentative: state.selectedRepresentative,
                 currentInvoice: state.currentInvoice,
-                invoiceHistory: normalizeHistory(state.invoiceHistory),
+                invoiceHistory: normalizeHistory(
+                    state.invoiceHistory,
+                    state.cancelledInvoiceKeys
+                ),
+                cancelledInvoiceKeys: normalizeKeyList(state.cancelledInvoiceKeys),
             }),
 
             merge: (persistedState, currentState) => {
                 const persisted = persistedState as PersistedInvoiceStore | undefined;
+                const cancelledInvoiceKeys = normalizeKeyList(persisted?.cancelledInvoiceKeys);
 
                 return {
                     ...currentState,
                     ...persisted,
-                    currentInvoice: isInvoice(persisted?.currentInvoice)
-                        ? persisted.currentInvoice
-                        : null,
-                    invoiceHistory: normalizeHistory(persisted?.invoiceHistory),
+                    cancelledInvoiceKeys,
+                    currentInvoice:
+                        isInvoice(persisted?.currentInvoice) &&
+                        !isInvoiceBlacklisted(persisted.currentInvoice, cancelledInvoiceKeys)
+                            ? persisted.currentInvoice
+                            : null,
+                    invoiceHistory: normalizeHistory(
+                        persisted?.invoiceHistory,
+                        cancelledInvoiceKeys
+                    ),
                 };
             },
         }

@@ -13,9 +13,12 @@ import {
     buildHistoryUrl,
     cancelInvoiceInGoogleSheet,
     cleanText,
+    fetchSheetHistory,
     getInvoiceKey,
     getSortTimestamp,
     groupSheetRowsToInvoices,
+    mergeInvoices,
+    normalizeOrderStatus,
     updateCustomerShipInGoogleSheet,
 } from 'utils/googleSheet';
 import whatsappIcon from '../../assets/whatsapp.png';
@@ -23,8 +26,8 @@ import deleteIcon from '../../assets/delete.png';
 import plusIcon from '../../assets/plus_icon.png';
 import editIcon from '../../assets/edit_i.png';
 
-const HISTORY_REFRESH_MS = 10000;
-const HISTORY_TIMEOUT_MS = 12000;
+const HISTORY_REFRESH_MS = 15000;
+const LOCAL_PENDING_KEEP_MS = 120000;
 
 const ShipIcon = () => (
     <svg
@@ -52,12 +55,33 @@ const ShipIcon = () => (
     </svg>
 );
 
+const isCancelledByKey = (invoice: SheetInvoice, cancelledKeys: string[]) => {
+    const key = getInvoiceKey(invoice);
+    const invoiceNumber = cleanText(invoice.invoiceNumber);
+    const orderId = cleanText(invoice.orderId);
+
+    return cancelledKeys.some((cancelledKey) => {
+        return cancelledKey === key || cancelledKey === invoiceNumber || cancelledKey === orderId;
+    });
+};
+
+const isRecentLocalInvoice = (invoice: SheetInvoice) => {
+    const timestamp = getSortTimestamp(invoice);
+
+    if (!timestamp) return false;
+
+    return Date.now() - timestamp < LOCAL_PENDING_KEEP_MS;
+};
+
 export const HistoryPage: React.FC = () => {
     const navigate = useNavigate();
     const { push } = useToast();
 
     const loggedInRep = useInvoiceStore((s: any) => s.loggedInRep);
+    const invoiceHistory: SheetInvoice[] = useInvoiceStore((s: any) => s.invoiceHistory);
+    const cancelledInvoiceKeys: string[] = useInvoiceStore((s: any) => s.cancelledInvoiceKeys || []);
     const deleteFromHistory = useInvoiceStore((s: any) => s.deleteFromHistory);
+    const addCancelledInvoiceKey = useInvoiceStore((s: any) => s.addCancelledInvoiceKey);
     const saveInvoice = useInvoiceStore((s: any) => s.saveInvoice);
     const updateInHistory = useInvoiceStore((s: any) => s.updateInHistory);
 
@@ -68,52 +92,72 @@ export const HistoryPage: React.FC = () => {
     const [cancelTarget, setCancelTarget] = useState<SheetInvoice | null>(null);
     const [shipTarget, setShipTarget] = useState<SheetInvoice | null>(null);
     const [shareInvoice, setShareInvoice] = useState<SheetInvoice | null>(null);
-    const [hiddenInvoiceKeys, setHiddenInvoiceKeys] = useState<string[]>([]);
 
     const pdfRef = useRef<HTMLDivElement | null>(null);
     const loadingRef = useRef(false);
 
-    const repInvoices = useMemo(() => {
-        const hiddenSet = new Set(hiddenInvoiceKeys);
+    const cancelledKeySet = useMemo(() => {
+        return new Set(cancelledInvoiceKeys.map((key) => cleanText(key)).filter(Boolean));
+    }, [cancelledInvoiceKeys]);
 
-        return sheetInvoices
-            .filter((invoice) => !hiddenSet.has(getInvoiceKey(invoice)))
+    const localRepInvoices = useMemo(() => {
+        return invoiceHistory
+            .filter((invoice) => {
+                const sameRep =
+                    cleanText(invoice.salesRepresentative).toLowerCase() ===
+                    cleanText(loggedInRep?.name).toLowerCase();
+
+                const active = normalizeOrderStatus(invoice.orderStatus) !== 'Cancel';
+                const cancelled = isCancelledByKey(invoice, cancelledInvoiceKeys);
+
+                return sameRep && active && !cancelled;
+            })
             .sort((a, b) => getSortTimestamp(b) - getSortTimestamp(a));
-    }, [hiddenInvoiceKeys, sheetInvoices]);
+    }, [cancelledInvoiceKeys, invoiceHistory, loggedInRep?.name]);
+
+    const sheetActiveInvoices = useMemo(() => {
+        return sheetInvoices
+            .filter((invoice) => {
+                const active = normalizeOrderStatus(invoice.orderStatus) !== 'Cancel';
+                const cancelled = isCancelledByKey(invoice, cancelledInvoiceKeys);
+
+                return active && !cancelled;
+            })
+            .sort((a, b) => getSortTimestamp(b) - getSortTimestamp(a));
+    }, [cancelledInvoiceKeys, sheetInvoices]);
+
+    const repInvoices = useMemo(() => {
+        if (!hasLoadedHistory) {
+            return localRepInvoices;
+        }
+
+        const sheetKeys = new Set<string>();
+
+        sheetActiveInvoices.forEach((invoice) => {
+            sheetKeys.add(getInvoiceKey(invoice));
+            sheetKeys.add(cleanText(invoice.invoiceNumber));
+            sheetKeys.add(cleanText(invoice.orderId));
+        });
+
+        const recentLocalOnly = localRepInvoices.filter((invoice) => {
+            const key = getInvoiceKey(invoice);
+            const invoiceNumber = cleanText(invoice.invoiceNumber);
+            const orderId = cleanText(invoice.orderId);
+
+            const existsInSheet =
+                sheetKeys.has(key) ||
+                sheetKeys.has(invoiceNumber) ||
+                sheetKeys.has(orderId);
+
+            return !existsInSheet && isRecentLocalInvoice(invoice);
+        });
+
+        return mergeInvoices(recentLocalOnly, sheetActiveInvoices)
+            .filter((invoice) => !isCancelledByKey(invoice, cancelledInvoiceKeys))
+            .sort((a, b) => getSortTimestamp(b) - getSortTimestamp(a));
+    }, [cancelledInvoiceKeys, hasLoadedHistory, localRepInvoices, sheetActiveInvoices]);
 
     const totalAmount = repInvoices.reduce((sum, inv) => sum + inv.total, 0);
-
-    const fetchHistoryFromApi = async (salesPerson: string): Promise<SheetInvoice[]> => {
-        const controller = new AbortController();
-        const timeoutId = window.setTimeout(() => controller.abort(), HISTORY_TIMEOUT_MS);
-
-        try {
-            const response = await fetch(buildHistoryUrl(salesPerson), {
-                method: 'GET',
-                cache: 'no-store',
-                signal: controller.signal,
-                headers: {
-                    Accept: 'application/json',
-                },
-            });
-
-            const json = await response.json().catch(() => ({
-                success: false,
-                message: 'Invalid backend response',
-                data: [],
-            }));
-
-            if (!response.ok || json?.success === false || !Array.isArray(json.data)) {
-                throw new Error(json?.message || 'Could not load invoice history');
-            }
-
-            return groupSheetRowsToInvoices(json.data as SheetRow[]).sort(
-                (a, b) => getSortTimestamp(b) - getSortTimestamp(a)
-            );
-        } finally {
-            window.clearTimeout(timeoutId);
-        }
-    };
 
     const loadHistoryFromSheet = useCallback(
         async () => {
@@ -130,33 +174,66 @@ export const HistoryPage: React.FC = () => {
             setHistoryError('');
 
             try {
-                const invoices = await fetchHistoryFromApi(loggedInRep.name);
+                const json = await fetchSheetHistory(buildHistoryUrl(loggedInRep.name));
+
+                if (!json?.success || !Array.isArray(json.data)) {
+                    throw new Error(json?.message || 'Invalid invoice history response');
+                }
+
+                const invoices = groupSheetRowsToInvoices(json.data as SheetRow[])
+                    .filter((invoice) => {
+                        return (
+                            normalizeOrderStatus(invoice.orderStatus) !== 'Cancel' &&
+                            !isCancelledByKey(invoice, cancelledInvoiceKeys)
+                        );
+                    })
+                    .sort((a, b) => getSortTimestamp(b) - getSortTimestamp(a));
 
                 setSheetInvoices(invoices);
                 setHasLoadedHistory(true);
                 setHistoryError('');
 
-                setHiddenInvoiceKeys((current) => {
-                    if (current.length === 0) return current;
-
-                    const liveKeys = new Set(invoices.map((invoice) => getInvoiceKey(invoice)));
-
-                    return current.filter((key) => liveKeys.has(key));
-                });
+                const liveKeys = new Set<string>();
 
                 invoices.forEach((invoice) => {
+                    liveKeys.add(getInvoiceKey(invoice));
+                    liveKeys.add(cleanText(invoice.invoiceNumber));
+                    liveKeys.add(cleanText(invoice.orderId));
                     updateInHistory(invoice as Invoice);
+                });
+
+                localRepInvoices.forEach((localInvoice) => {
+                    const key = getInvoiceKey(localInvoice);
+                    const invoiceNumber = cleanText(localInvoice.invoiceNumber);
+                    const orderId = cleanText(localInvoice.orderId);
+
+                    const existsInSheet =
+                        liveKeys.has(key) ||
+                        liveKeys.has(invoiceNumber) ||
+                        liveKeys.has(orderId);
+
+                    const isRecent = isRecentLocalInvoice(localInvoice);
+
+                    if (!existsInSheet && !isRecent) {
+                        deleteFromHistory(key || invoiceNumber || orderId);
+                    }
                 });
             } catch (error) {
                 console.error('History sync failed:', error);
-                setHistoryError('Could not load latest invoices. Please refresh and try again.');
+                setHistoryError('Could not load latest invoices. Showing saved local invoices.');
                 setHasLoadedHistory(true);
             } finally {
                 loadingRef.current = false;
                 setIsSyncing(false);
             }
         },
-        [loggedInRep?.name, updateInHistory]
+        [
+            cancelledInvoiceKeys,
+            deleteFromHistory,
+            localRepInvoices,
+            loggedInRep?.name,
+            updateInHistory,
+        ]
     );
 
     useEffect(() => {
@@ -197,16 +274,26 @@ export const HistoryPage: React.FC = () => {
         if (!cancelTarget) return;
 
         const key = getInvoiceKey(cancelTarget);
+        const invoiceNumber = cleanText(cancelTarget.invoiceNumber);
+        const orderId = cleanText(cancelTarget.orderId);
 
-        setHiddenInvoiceKeys((current) =>
-            current.includes(key) ? current : [...current, key]
-        );
+        [key, invoiceNumber, orderId].forEach((cancelKey) => {
+            if (cancelKey) {
+                addCancelledInvoiceKey(cancelKey);
+                deleteFromHistory(cancelKey);
+            }
+        });
 
         setSheetInvoices((current) =>
-            current.filter((invoice) => getInvoiceKey(invoice) !== key)
+            current.filter((invoice) => {
+                return (
+                    getInvoiceKey(invoice) !== key &&
+                    cleanText(invoice.invoiceNumber) !== invoiceNumber &&
+                    cleanText(invoice.orderId) !== orderId
+                );
+            })
         );
 
-        deleteFromHistory(cancelTarget.invoiceNumber);
         setCancelTarget(null);
         push('Order cancelled successfully');
 
@@ -357,12 +444,20 @@ export const HistoryPage: React.FC = () => {
     };
 
     const emptyMessage = () => {
+        if (repInvoices.length > 0) {
+            return '';
+        }
+
         if (!hasLoadedHistory) {
-            return 'Syncing latest invoices...';
+            return 'Loading saved invoices...';
         }
 
         if (historyError) {
             return historyError;
+        }
+
+        if (isSyncing) {
+            return 'Syncing latest invoices...';
         }
 
         return 'No invoices yet.';
@@ -391,7 +486,7 @@ export const HistoryPage: React.FC = () => {
                     <div className="history-empty">
                         <p>{emptyMessage()}</p>
 
-                        {hasLoadedHistory && !historyError && (
+                        {hasLoadedHistory && !historyError && !isSyncing && (
                             <p>
                                 Tap <strong>+</strong> to create your first invoice.
                             </p>
