@@ -41,8 +41,6 @@ export type SheetResponse = {
 export const GOOGLE_SHEET_WEB_APP_URL =
     'https://script.google.com/macros/s/AKfycbw89yajiSI_8Y_jBBWS_GeUSUHKuf_bO7O6Tk4KbrRfn8KwzJ9g_QPR0WUeY536qohLxg/exec';
 
-export const SHEET_REQUEST_TIMEOUT_MS = 12000;
-
 export const cleanText = (value: unknown): string => String(value ?? '').trim();
 
 export const toNumber = (value: unknown): number => {
@@ -56,14 +54,20 @@ export const generateOrderId = () => {
 
 export const normalizePaymentStatus = (value?: string): 'paid' | 'pending' | 'deposit' => {
     const status = cleanText(value).toLowerCase();
+
     if (status === 'paid') return 'paid';
     if (status === 'deposit') return 'deposit';
+
     return 'pending';
 };
 
 export const normalizeOrderStatus = (value?: string): string => {
     const status = cleanText(value).toLowerCase();
-    if (status === 'cancel' || status === 'cancelled' || status === 'canceled') return 'Cancel';
+
+    if (status === 'cancel' || status === 'cancelled' || status === 'canceled') {
+        return 'Cancel';
+    }
+
     return 'Active';
 };
 
@@ -127,10 +131,14 @@ const MONTHS: Record<string, string> = {
 
 export const parseSheetDate = (value?: string): string => {
     const raw = cleanText(value);
+
     if (!raw) return new Date().toISOString();
 
     const direct = new Date(raw);
-    if (!Number.isNaN(direct.getTime())) return direct.toISOString();
+
+    if (!Number.isNaN(direct.getTime())) {
+        return direct.toISOString();
+    }
 
     const match = raw.match(/^(\d{1,2})[-\s]([A-Za-z]{3})[-\s](\d{4})(?:\s+at\s+|\s+)(\d{1,2}):(\d{2})/i);
 
@@ -188,11 +196,15 @@ export const mergeInvoices = (localInvoices: SheetInvoice[], sheetInvoices: Shee
 
     localInvoices.forEach((invoice) => {
         const key = getInvoiceKey(invoice);
-        if (key) merged.set(key, invoice);
+
+        if (key) {
+            merged.set(key, invoice);
+        }
     });
 
     sheetInvoices.forEach((sheetInvoice) => {
         const key = getInvoiceKey(sheetInvoice);
+
         if (!key) return;
 
         const localInvoice = merged.get(key);
@@ -221,7 +233,9 @@ export const groupSheetRowsToInvoices = (rows: SheetRow[]): SheetInvoice[] => {
 
     rows.forEach((row) => {
         const orderStatus = normalizeOrderStatus(row.orderStatus);
-        const customerShipStatus = normalizeCustomerShipStatus(row.customerShipStatus || row.customerShip || row.shippingStatus);
+        const customerShipStatus = normalizeCustomerShipStatus(
+            row.customerShipStatus || row.customerShip || row.shippingStatus
+        );
 
         if (orderStatus === 'Cancel') return;
 
@@ -233,11 +247,12 @@ export const groupSheetRowsToInvoices = (rows: SheetRow[]): SheetInvoice[] => {
 
         const model = cleanText(row.model);
         const qty = toNumber(row.qty);
-        const price = toNumber(row.price);
+        const price = Number(row.price);
 
-        if (!model || qty <= 0 || price === 0) return;
+        if (!model || qty <= 0 || !Number.isFinite(price) || price === 0) return;
 
-        const rowTotal = toNumber(row.total) || qty * price;
+        const sheetTotal = Number(row.total);
+        const rowTotal = Number.isFinite(sheetTotal) ? sheetTotal : qty * price;
         const orderShipStatus = normalizeOrderShipStatus(row.orderShipStatus || row.orderShipDcc);
         const updatedAt = cleanText(row.updatedAt) || parseSheetDate(row.date);
         const revision = row.revision || 0;
@@ -324,147 +339,82 @@ export const buildHistoryUrl = (salesPerson?: string, extra?: Record<string, str
 
     params.set('_', String(Date.now()));
 
-    return `${GOOGLE_SHEET_WEB_APP_URL}?${params.toString()}`;
-};
-
-export const jsonpRequest = <T,>(url: string): Promise<T> => {
-    return new Promise((resolve, reject) => {
-        const callbackName = `__truecellSheetCallback_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-        const script = document.createElement('script');
-        let timeout = 0;
-
-        const cleanup = () => {
-            window.clearTimeout(timeout);
-            script.remove();
-            delete (window as any)[callbackName];
-        };
-
-        timeout = window.setTimeout(() => {
-            cleanup();
-            reject(new Error('Google Sheet request timed out'));
-        }, SHEET_REQUEST_TIMEOUT_MS);
-
-        (window as any)[callbackName] = (data: T) => {
-            cleanup();
-            resolve(data);
-        };
-
-        script.onerror = () => {
-            cleanup();
-            reject(new Error('Google Sheet JSONP request failed'));
-        };
-
-        const separator = url.includes('?') ? '&' : '?';
-        script.src = `${url}${separator}callback=${encodeURIComponent(callbackName)}`;
-        document.body.appendChild(script);
-    });
+    return `/api/sheet-history?${params.toString()}`;
 };
 
 export const fetchSheetHistory = async (url: string): Promise<SheetResponse> => {
-    return jsonpRequest<SheetResponse>(url);
-};
+    const response = await fetch(url, {
+        method: 'GET',
+        cache: 'no-store',
+    });
 
-const delay = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+    const json = (await response.json().catch(() => ({
+        success: false,
+        message: 'Invalid backend response',
+    }))) as SheetResponse;
 
-export const postToGoogleSheet = async (payload: Record<string, unknown>) => {
-    if (!GOOGLE_SHEET_WEB_APP_URL || GOOGLE_SHEET_WEB_APP_URL.includes('PASTE_')) {
-        throw new Error('Google Sheet Web App URL missing');
+    if (!response.ok || json?.success === false) {
+        throw new Error(json?.message || 'Could not load invoice history');
     }
 
-    await fetch(GOOGLE_SHEET_WEB_APP_URL, {
+    return json;
+};
+
+export const postToGoogleSheet = async (payload: Record<string, unknown>) => {
+    const response = await fetch('/api/sheet-save', {
         method: 'POST',
-        mode: 'no-cors',
+        cache: 'no-store',
         headers: {
-            'Content-Type': 'text/plain;charset=utf-8',
+            'Content-Type': 'application/json',
         },
         body: JSON.stringify(payload),
     });
+
+    const json = await response.json().catch(() => ({
+        success: false,
+        message: 'Invalid backend response',
+    }));
+
+    if (!response.ok || json?.success === false) {
+        throw new Error(json?.message || 'Could not save invoice');
+    }
+
+    return json;
 };
 
 const normalizeInvoiceItems = (invoice: SheetInvoice): InvoiceItem[] => {
     return (invoice.items || []).filter((item) => {
-        return cleanText(item.model) && toNumber(item.qty) > 0 && toNumber(item.price) !== 0;
-    });
-};
+        const price = Number(item.price);
 
-const invoiceMatchesExpected = (actual: SheetInvoice, expected: SheetInvoice): boolean => {
-    if (cleanText(actual.invoiceNumber) !== cleanText(expected.invoiceNumber)) {
-        return false;
-    }
-
-    if (cleanText(actual.customerName).toLowerCase() !== cleanText(expected.customerName).toLowerCase()) {
-        return false;
-    }
-
-    const actualItems = normalizeInvoiceItems(actual);
-    const expectedItems = normalizeInvoiceItems(expected);
-
-    if (actualItems.length !== expectedItems.length) {
-        return false;
-    }
-
-    const actualById = new Map(actualItems.map((item) => [cleanText(item.id), item]));
-
-    return expectedItems.every((expectedItem) => {
-        const byId = actualById.get(cleanText(expectedItem.id));
-
-        if (byId) {
-            return (
-                cleanText(byId.model) === cleanText(expectedItem.model) &&
-                toNumber(byId.qty) === toNumber(expectedItem.qty) &&
-                toNumber(byId.price) === toNumber(expectedItem.price)
-            );
-        }
-
-        return actualItems.some((actualItem) => {
-            return (
-                cleanText(actualItem.model) === cleanText(expectedItem.model) &&
-                toNumber(actualItem.qty) === toNumber(expectedItem.qty) &&
-                toNumber(actualItem.price) === toNumber(expectedItem.price)
-            );
-        });
+        return (
+            cleanText(item.model) &&
+            toNumber(item.qty) > 0 &&
+            Number.isFinite(price) &&
+            price !== 0
+        );
     });
 };
 
 export const fetchInvoiceFromSheet = async (invoice: SheetInvoice): Promise<SheetInvoice | null> => {
     const orderId = cleanText(invoice.orderId);
     const invoiceNumber = cleanText(invoice.invoiceNumber);
-    const url = buildHistoryUrl(invoice.salesRepresentative, orderId ? { orderId } : { invoiceNo: invoiceNumber });
+    const url = buildHistoryUrl(
+        invoice.salesRepresentative,
+        orderId ? { orderId } : { invoiceNo: invoiceNumber }
+    );
+
     const json = await fetchSheetHistory(url);
 
     if (!json?.success || !Array.isArray(json.data)) {
-        throw new Error(json?.message || 'Invalid Google Sheet response');
+        throw new Error(json?.message || 'Invalid backend response');
     }
 
     const grouped = groupSheetRowsToInvoices(json.data);
 
-    return grouped.find((item) => {
-        return getInvoiceKey(item) === getInvoiceKey(invoice) || cleanText(item.invoiceNumber) === invoiceNumber;
-    }) || null;
-};
-
-export const verifyInvoiceInSheet = async (invoice: SheetInvoice): Promise<SheetInvoice> => {
-    const retryDelays = [1200, 2500, 5000, 8000];
-    let lastFound: SheetInvoice | null = null;
-
-    for (const retryDelay of retryDelays) {
-        await delay(retryDelay);
-
-        const found = await fetchInvoiceFromSheet(invoice);
-
-        if (found) {
-            lastFound = found;
-        }
-
-        if (found && invoiceMatchesExpected(found, invoice)) {
-            return found;
-        }
-    }
-
-    throw new Error(
-        lastFound
-            ? 'Google Sheet updated with old invoice data, latest edit not verified yet'
-            : 'Invoice not found in Google Sheet after save'
+    return (
+        grouped.find((item) => {
+            return getInvoiceKey(item) === getInvoiceKey(invoice) || cleanText(item.invoiceNumber) === invoiceNumber;
+        }) || null
     );
 };
 
