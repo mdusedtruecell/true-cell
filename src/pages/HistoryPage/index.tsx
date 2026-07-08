@@ -6,307 +6,27 @@ import InvoicePrintView from 'components/InvoicePrintView/InvoicePrintView';
 import { generatePdf, getPdfFilename } from 'utils/pdf';
 import { buildWhatsappMessage } from 'utils/whatsapp';
 import { useToast } from 'components/Toast/Toast';
-import type { Invoice, InvoiceItem } from 'types/invoice';
+import type { Invoice } from 'types/invoice';
+import {
+    type SheetInvoice,
+    type SheetRow,
+    buildHistoryUrl,
+    cancelInvoiceInGoogleSheet,
+    cleanText,
+    fetchSheetHistory,
+    getInvoiceKey,
+    getSortTimestamp,
+    groupSheetRowsToInvoices,
+    mergeInvoices,
+    normalizeOrderStatus,
+    updateCustomerShipInGoogleSheet,
+} from 'utils/googleSheet';
 import whatsappIcon from '../../assets/whatsapp.png';
 import deleteIcon from '../../assets/delete.png';
 import plusIcon from '../../assets/plus_icon.png';
 import editIcon from '../../assets/edit_i.png';
 
-type SheetInvoice = Invoice & {
-    orderId?: string;
-    orderStatus?: string;
-    orderShipStatus?: string;
-    customerShipStatus?: 'pending' | 'shipped';
-};
-
-type SheetRow = {
-    date?: string;
-    orderId?: string;
-    itemId?: string;
-    invoiceNo?: string;
-    customer?: string;
-    model?: string;
-    qty?: number | string;
-    price?: number | string;
-    total?: number | string;
-    salesPerson?: string;
-    paymentStatus?: string;
-    orderStatus?: string;
-    orderShipStatus?: string;
-    orderShipDcc?: string;
-    customerShipStatus?: string;
-    customerShip?: string;
-};
-
-type SheetResponse = {
-    success?: boolean;
-    message?: string;
-    data?: SheetRow[];
-};
-
-const GOOGLE_SHEET_WEB_APP_URL =
-    'https://script.google.com/macros/s/AKfycbw89yajiSI_8Y_jBBWS_GeUSUHKuf_bO7O6Tk4KbrRfn8KwzJ9g_QPR0WUeY536qohLxg/exec';
-
 const HISTORY_REFRESH_MS = 25000;
-const SHEET_REQUEST_TIMEOUT_MS = 12000;
-
-const cleanText = (value: unknown): string => String(value ?? '').trim();
-
-const toNumber = (value: unknown): number => {
-    const n = Number(value);
-    return Number.isFinite(n) ? n : 0;
-};
-
-const normalizePaymentStatus = (value?: string): 'paid' | 'pending' | 'deposit' => {
-    const status = cleanText(value).toLowerCase();
-
-    if (status === 'paid') return 'paid';
-    if (status === 'deposit') return 'deposit';
-    return 'pending';
-};
-
-const normalizeOrderStatus = (value?: string): string => {
-    const status = cleanText(value).toLowerCase();
-
-    if (status === 'cancel' || status === 'cancelled' || status === 'canceled') {
-        return 'Cancel';
-    }
-
-    return 'Active';
-};
-
-const normalizeCustomerShipStatus = (value?: string): 'pending' | 'shipped' => {
-    return cleanText(value).toLowerCase() === 'shipped' ? 'shipped' : 'pending';
-};
-
-const parseSheetDate = (value?: string): string => {
-    const raw = cleanText(value);
-
-    if (!raw) return new Date().toISOString();
-
-    const clean = raw.replace(/\s+at\s+/i, ' ');
-    const parsed = new Date(clean);
-
-    if (!Number.isNaN(parsed.getTime())) {
-        return parsed.toISOString();
-    }
-
-    return new Date().toISOString();
-};
-
-const getInvoiceKey = (invoice: SheetInvoice): string => {
-    return cleanText(invoice.orderId || invoice.invoiceNumber);
-};
-
-const mergeInvoices = (localInvoices: SheetInvoice[], sheetInvoices: SheetInvoice[]): SheetInvoice[] => {
-    const merged = new Map<string, SheetInvoice>();
-
-    localInvoices.forEach((invoice) => {
-        const key = getInvoiceKey(invoice);
-        if (key) merged.set(key, invoice);
-    });
-
-    sheetInvoices.forEach((sheetInvoice) => {
-        const key = getInvoiceKey(sheetInvoice);
-        if (!key) return;
-
-        const localInvoice = merged.get(key);
-
-        merged.set(key, {
-            ...(localInvoice || {}),
-            ...sheetInvoice,
-            customerShipStatus:
-                localInvoice?.customerShipStatus === 'shipped' || sheetInvoice.customerShipStatus === 'shipped'
-                    ? 'shipped'
-                    : 'pending',
-            orderShipStatus: cleanText(sheetInvoice.orderShipStatus) || localInvoice?.orderShipStatus || '',
-        });
-    });
-
-    return Array.from(merged.values())
-        .filter((invoice) => normalizeOrderStatus(invoice.orderStatus) !== 'Cancel')
-        .sort((a, b) => {
-            const dateA = new Date(a.invoiceDate).getTime();
-            const dateB = new Date(b.invoiceDate).getTime();
-            return dateB - dateA;
-        });
-};
-
-const groupSheetRowsToInvoices = (rows: SheetRow[]): SheetInvoice[] => {
-    const grouped = new Map<string, SheetInvoice>();
-
-    rows.forEach((row) => {
-        const orderStatus = normalizeOrderStatus(row.orderStatus);
-        const customerShipStatus = normalizeCustomerShipStatus(row.customerShipStatus || row.customerShip);
-
-        if (orderStatus === 'Cancel') return;
-
-        const orderId = cleanText(row.orderId);
-        const invoiceNumber = cleanText(row.invoiceNo || orderId);
-        const key = orderId || invoiceNumber;
-
-        if (!key) return;
-
-        const qty = toNumber(row.qty);
-        const price = toNumber(row.price);
-        const rowTotal = toNumber(row.total) || qty * price;
-        const orderShipStatus = cleanText(row.orderShipStatus || row.orderShipDcc);
-
-        const item: InvoiceItem = {
-            id: cleanText(row.itemId) || `${key}-${grouped.get(key)?.items.length ?? 0}`,
-            model: cleanText(row.model),
-            qty,
-            price,
-        };
-
-        const existing = grouped.get(key);
-
-        if (existing) {
-            existing.items.push(item);
-            existing.subtotal += rowTotal;
-            existing.total += rowTotal;
-
-            if (orderShipStatus) {
-                existing.orderShipStatus = orderShipStatus;
-            }
-
-            if (customerShipStatus === 'shipped') {
-                existing.customerShipStatus = 'shipped';
-            }
-
-            return;
-        }
-
-        grouped.set(key, {
-            orderId,
-            invoiceNumber,
-            customerName: cleanText(row.customer),
-            salesRepresentative: cleanText(row.salesPerson),
-            invoiceDate: parseSheetDate(row.date),
-            items: [item],
-            subtotal: rowTotal,
-            total: rowTotal,
-            depositAmount: 0,
-            paymentStatus: normalizePaymentStatus(row.paymentStatus),
-            orderStatus,
-            orderShipStatus,
-            customerShipStatus,
-        });
-    });
-
-    return Array.from(grouped.values()).sort((a, b) => {
-        const dateA = new Date(a.invoiceDate).getTime();
-        const dateB = new Date(b.invoiceDate).getTime();
-        return dateB - dateA;
-    });
-};
-
-const buildHistoryUrl = (salesPerson?: string): string => {
-    const params = new URLSearchParams();
-
-    if (salesPerson) {
-        params.set('salesPerson', salesPerson);
-    }
-
-    params.set('_', String(Date.now()));
-
-    return `${GOOGLE_SHEET_WEB_APP_URL}?${params.toString()}`;
-};
-
-const jsonpRequest = <T,>(url: string): Promise<T> => {
-    return new Promise((resolve, reject) => {
-        const callbackName = `__truecellSheetCallback_${Date.now()}_${Math.random()
-            .toString(36)
-            .slice(2)}`;
-        const script = document.createElement('script');
-
-        const cleanup = () => {
-            window.clearTimeout(timeout);
-            script.remove();
-            delete (window as any)[callbackName];
-        };
-
-        const timeout = window.setTimeout(() => {
-            cleanup();
-            reject(new Error('Google Sheet request timed out'));
-        }, SHEET_REQUEST_TIMEOUT_MS);
-
-        (window as any)[callbackName] = (data: T) => {
-            cleanup();
-            resolve(data);
-        };
-
-        script.onerror = () => {
-            cleanup();
-            reject(new Error('Google Sheet JSONP request failed'));
-        };
-
-        const separator = url.includes('?') ? '&' : '?';
-        script.src = `${url}${separator}callback=${encodeURIComponent(callbackName)}`;
-        document.body.appendChild(script);
-    });
-};
-
-const fetchSheetHistory = async (url: string): Promise<SheetResponse> => {
-    try {
-        const response = await fetch(url, {
-            method: 'GET',
-            cache: 'no-store',
-        });
-
-        return (await response.json()) as SheetResponse;
-    } catch (error) {
-        console.warn('Normal Google Sheet fetch failed. Trying JSONP fallback.', error);
-        return jsonpRequest<SheetResponse>(url);
-    }
-};
-
-const postToGoogleSheet = (payload: Record<string, unknown>) => {
-    if (!GOOGLE_SHEET_WEB_APP_URL || GOOGLE_SHEET_WEB_APP_URL.includes('PASTE_')) {
-        console.error('Google Sheet Web App URL missing in HistoryPage');
-        return Promise.resolve();
-    }
-
-    return fetch(GOOGLE_SHEET_WEB_APP_URL, {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: {
-            'Content-Type': 'text/plain;charset=utf-8',
-        },
-        body: JSON.stringify(payload),
-    })
-        .then(() => undefined)
-        .catch((error) => {
-            console.error('Google Sheet update failed:', error);
-        });
-};
-
-const cancelInvoiceInGoogleSheet = (invoice: SheetInvoice) => {
-    const orderId = cleanText(invoice.orderId || invoice.invoiceNumber);
-    const invoiceNumber = cleanText(invoice.invoiceNumber);
-
-    return postToGoogleSheet({
-        action: 'cancelOrder',
-        orderId,
-        previousOrderId: invoiceNumber,
-        invoiceNo: invoiceNumber,
-        invoiceNumber,
-    });
-};
-
-const updateCustomerShipInGoogleSheet = (invoice: SheetInvoice) => {
-    const orderId = cleanText(invoice.orderId || invoice.invoiceNumber);
-    const invoiceNumber = cleanText(invoice.invoiceNumber);
-
-    return postToGoogleSheet({
-        action: 'updateCustomerShipStatus',
-        orderId,
-        previousOrderId: invoiceNumber,
-        invoiceNo: invoiceNumber,
-        invoiceNumber,
-        customerShipStatus: 'Shipped',
-    });
-};
 
 const ShipIcon = () => (
     <svg
@@ -356,14 +76,19 @@ export const HistoryPage: React.FC = () => {
 
     const localRepInvoices = useMemo(() => {
         return invoiceHistory.filter((inv) => {
-            const isSameRep = cleanText(inv.salesRepresentative).toLowerCase() === cleanText(loggedInRep?.name).toLowerCase();
+            const isSameRep =
+                cleanText(inv.salesRepresentative).toLowerCase() ===
+                cleanText(loggedInRep?.name).toLowerCase();
+
             const isActive = normalizeOrderStatus(inv.orderStatus) !== 'Cancel';
+
             return isSameRep && isActive;
         });
     }, [invoiceHistory, loggedInRep?.name]);
 
     const repInvoices = useMemo(() => {
         const hiddenSet = new Set(hiddenInvoiceKeys);
+
         return mergeInvoices(localRepInvoices, sheetInvoices).filter(
             (invoice) => !hiddenSet.has(getInvoiceKey(invoice))
         );
@@ -388,9 +113,19 @@ export const HistoryPage: React.FC = () => {
 
                 setSheetInvoices(invoices);
 
-                invoices.forEach((invoice) => {
-                    updateInHistory(invoice as Invoice);
+                setHiddenInvoiceKeys((current) => {
+                    if (current.length === 0) return current;
+
+                    const liveKeys = new Set(invoices.map((invoice) => getInvoiceKey(invoice)));
+
+                    return current.filter((key) => liveKeys.has(key));
                 });
+
+                [...invoices]
+                    .sort((a, b) => getSortTimestamp(a) - getSortTimestamp(b))
+                    .forEach((invoice) => {
+                        updateInHistory(invoice as Invoice);
+                    });
 
                 hasShownSyncWarningRef.current = false;
             } catch (error) {
@@ -417,7 +152,9 @@ export const HistoryPage: React.FC = () => {
         }, HISTORY_REFRESH_MS);
 
         const handleFocus = () => {
-            void loadHistoryFromSheet();
+            if (document.visibilityState === 'visible') {
+                void loadHistoryFromSheet();
+            }
         };
 
         document.addEventListener('visibilitychange', handleFocus);
@@ -446,8 +183,14 @@ export const HistoryPage: React.FC = () => {
         });
 
         deleteFromHistory(cancelTarget.invoiceNumber);
-        setHiddenInvoiceKeys((current) => (current.includes(key) ? current : [...current, key]));
-        setSheetInvoices((current) => current.filter((invoice) => getInvoiceKey(invoice) !== key));
+
+        setHiddenInvoiceKeys((current) =>
+            current.includes(key) ? current : [...current, key]
+        );
+
+        setSheetInvoices((current) =>
+            current.filter((invoice) => getInvoiceKey(invoice) !== key)
+        );
 
         setCancelTarget(null);
         push('Order cancelled successfully');
@@ -459,6 +202,8 @@ export const HistoryPage: React.FC = () => {
         const updatedInvoice: SheetInvoice = {
             ...shipTarget,
             customerShipStatus: 'shipped',
+            updatedAt: new Date().toISOString(),
+            revision: Date.now(),
         };
 
         const updatedKey = getInvoiceKey(updatedInvoice);
@@ -502,6 +247,7 @@ export const HistoryPage: React.FC = () => {
 
             try {
                 const blob = await generatePdf(pdfRef.current);
+
                 const file = new File([blob], getPdfFilename(invoice), {
                     type: 'application/pdf',
                 });
@@ -605,6 +351,7 @@ export const HistoryPage: React.FC = () => {
                 {repInvoices.length === 0 ? (
                     <div className="history-empty">
                         <p>{isSyncing ? 'Loading invoices...' : 'No invoices yet.'}</p>
+
                         {!isSyncing && (
                             <p>
                                 Tap <strong>+</strong> to create your first invoice.

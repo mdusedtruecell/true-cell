@@ -6,6 +6,7 @@ export interface InvoiceItem {
 }
 
 export interface Invoice {
+    orderId?: string;
     invoiceNumber: string;
     customerName: string;
     salesRepresentative: string;
@@ -18,4 +19,7 @@ export interface Invoice {
     orderStatus?: string;
     orderShipStatus?: string;
     customerShipStatus?: 'pending' | 'shipped';
+    updatedAt?: string;
+    revision?: string | number;
+    syncStatus?: 'synced' | 'pending' | 'failed';
 }

@@ -13,25 +13,23 @@ import { buildWhatsappMessage } from 'utils/whatsapp';
 import InvoicePrintView from 'components/InvoicePrintView/InvoicePrintView';
 import { generatePdf, getPdfFilename } from 'utils/pdf';
 import { useToast } from 'components/Toast/Toast';
+import {
+    type SheetInvoice,
+    generateOrderId,
+    syncInvoiceToGoogleSheet,
+    postToGoogleSheet,
+    cleanText,
+} from 'utils/googleSheet';
 import backbtn from '../../assets/back.png';
 import deleteicon from '../../assets/delete.png';
 import whatsappicon from '../../assets/whatsapp.png';
 import redDelete from '../../assets/row_delete.png';
-
-type SheetInvoice = Invoice & {
-    orderId?: string;
-    customerShipStatus?: 'pending' | 'shipped';
-};
 
 type FormValues = SheetInvoice & {
     paymentReceived?: boolean;
 };
 
 const DRAFT_KEY = 'invoice-draft';
-
-// ✅ Apps Script Web App URL yahan paste karo.
-// Important: /exec wala deployed URL use karna hai, /dev wala nahi.
-const GOOGLE_SHEET_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbw89yajiSI_8Y_jBBWS_GeUSUHKuf_bO7O6Tk4KbrRfn8KwzJ9g_QPR0WUeY536qohLxg/exec';
 
 const defaultItem = (): InvoiceItem => ({
     id: uuid(),
@@ -40,126 +38,16 @@ const defaultItem = (): InvoiceItem => ({
     price: undefined,
 });
 
-// ✅ Order ID invoice number se alag aur unique hoga
-const generateOrderId = () => {
-    return `ORD-${Date.now()}-${uuid().slice(0, 8).toUpperCase()}`;
-};
-
-// ✅ Sheet ke liye readable Dubai date format
-const formatDateForSheet = (dateValue?: string) => {
-    const date = dateValue ? new Date(dateValue) : new Date();
-
-    if (Number.isNaN(date.getTime())) {
-        return new Intl.DateTimeFormat('en-GB', {
-            timeZone: 'Asia/Dubai',
-            day: '2-digit',
-            month: 'short',
-            year: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: false,
-        })
-            .format(new Date())
-            .replace(',', '')
-            .replaceAll(' ', '-')
-            .replace(/-(\d{2}:\d{2})$/, ' $1');
-    }
-
-    return new Intl.DateTimeFormat('en-GB', {
-        timeZone: 'Asia/Dubai',
-        day: '2-digit',
-        month: 'short',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-    })
-        .format(date)
-        .replace(',', '')
-        .replaceAll(' ', '-')
-        .replace(/-(\d{2}:\d{2})$/, ' $1');
-};
-
-// ✅ Sheet me full invoice save/edit/overwrite
-const syncInvoiceToGoogleSheet = (
-    invoice: SheetInvoice,
-    previousInvoice?: SheetInvoice
-) => {
-    if (!GOOGLE_SHEET_WEB_APP_URL || GOOGLE_SHEET_WEB_APP_URL.includes('PASTE_')) {
-        console.warn('Google Sheet Web App URL missing');
-        return;
-    }
-
-    const orderId = invoice.orderId || generateOrderId();
-
-    const payload = {
-        action: 'save',
-
-        // ✅ Main tracking ID
-        orderId,
-
-        // ✅ Edit/migration ke liye old ID bhi bhej rahe hain
-        previousOrderId:
-            previousInvoice?.orderId ||
-            previousInvoice?.invoiceNumber ||
-            '',
-
-        // ✅ Date ab clean format me sheet me jayegi
-        date: formatDateForSheet(invoice.invoiceDate),
-
-        // ✅ Invoice number alag rahega
-        invoiceNo: invoice.invoiceNumber,
-
-        customer: invoice.customerName,
-        salesPerson: invoice.salesRepresentative,
-        paymentStatus: invoice.paymentStatus,
-        customerShipStatus: invoice.customerShipStatus === 'shipped' ? 'shipped' : undefined,
-
-        items: invoice.items.map((item) => ({
-            id: item.id || uuid(),
-            model: item.model,
-            qty: Number(item.qty) || 0,
-            price: Number(item.price) || 0,
-        })),
-    };
-
-    void fetch(GOOGLE_SHEET_WEB_APP_URL, {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: {
-            'Content-Type': 'text/plain;charset=utf-8',
-        },
-        body: JSON.stringify(payload),
-    })
-        .then(() => {
-            console.log('Google Sheet sync request sent');
-        })
-        .catch((error) => {
-            console.error('Google Sheet sync failed:', error);
-        });
-};
-
-// ✅ Invoice delete ke liye helper
-// Isko us file me call karna jahan actual invoice delete hoti hai.
 export const deleteInvoiceFromGoogleSheet = (invoice: SheetInvoice) => {
-    if (!GOOGLE_SHEET_WEB_APP_URL || GOOGLE_SHEET_WEB_APP_URL.includes('PASTE_')) {
-        console.warn('Google Sheet Web App URL missing');
-        return;
-    }
+    const orderId = cleanText(invoice.orderId || invoice.invoiceNumber);
+    const invoiceNumber = cleanText(invoice.invoiceNumber);
 
-    const payload = {
+    return postToGoogleSheet({
         action: 'deleteOrder',
-        orderId: invoice.orderId || invoice.invoiceNumber,
-        previousOrderId: invoice.invoiceNumber,
-    };
-
-    void fetch(GOOGLE_SHEET_WEB_APP_URL, {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: {
-            'Content-Type': 'text/plain;charset=utf-8',
-        },
-        body: JSON.stringify(payload),
+        orderId,
+        previousOrderId: invoiceNumber,
+        invoiceNo: invoiceNumber,
+        invoiceNumber,
     }).catch((error) => {
         console.error('Google Sheet delete failed:', error);
     });
@@ -207,6 +95,7 @@ export const CreateInvoicePage: React.FC = () => {
                 selectedRep ??
                 '',
             invoiceDate: editInvoice?.invoiceDate ?? draft?.invoiceDate ?? new Date().toISOString(),
+            updatedAt: editInvoice?.updatedAt ?? draft?.updatedAt ?? new Date().toISOString(),
             items: editInvoice?.items ?? draft?.items ?? [defaultItem()],
             subtotal: editInvoice?.subtotal ?? draft?.subtotal ?? 0,
             total: editInvoice?.total ?? draft?.total ?? 0,
@@ -227,9 +116,8 @@ export const CreateInvoicePage: React.FC = () => {
     const { subtotal, total } = useInvoiceCalculations((watchedItems || []) as InvoiceItem[]);
 
     const [confirmOpen, setConfirmOpen] = useState(false);
-    const [isSaved, setIsSaved] = useState(false);
+    const [isSaving, setIsSaving] = useState(false);
 
-    // Auto-save draft. Edit mode me draft save nahi hoga.
     useEffect(() => {
         if (isEditing) return;
 
@@ -240,7 +128,6 @@ export const CreateInvoicePage: React.FC = () => {
         return () => subscription?.unsubscribe?.();
     }, [watch, isEditing]);
 
-    // Computed total ko form values me update karo.
     useEffect(() => {
         setValue('subtotal', subtotal as any);
         setValue('total', total as any);
@@ -260,6 +147,7 @@ export const CreateInvoicePage: React.FC = () => {
             customerName: '',
             salesRepresentative: selectedRep ?? '',
             invoiceDate: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
             items: [defaultItem()],
             subtotal: 0,
             total: 0,
@@ -268,7 +156,7 @@ export const CreateInvoicePage: React.FC = () => {
             paymentReceived: false,
         } as FormValues);
 
-        setIsSaved(false);
+        setIsSaving(false);
         setConfirmOpen(false);
     };
 
@@ -292,6 +180,7 @@ export const CreateInvoicePage: React.FC = () => {
         const orderId = String(
             data.orderId || initialOrderIdRef.current || generateOrderId()
         ).trim();
+        const nowIso = new Date().toISOString();
 
         initialOrderIdRef.current = orderId;
         setValue('orderId' as any, orderId as any);
@@ -300,7 +189,8 @@ export const CreateInvoicePage: React.FC = () => {
             ...data,
             orderId,
             invoiceNumber: number,
-            invoiceDate: new Date().toISOString(),
+            invoiceDate: data.invoiceDate || editInvoice?.invoiceDate || nowIso,
+            updatedAt: nowIso,
             subtotal,
             total,
             depositAmount: Number(data.depositAmount) || 0,
@@ -310,28 +200,56 @@ export const CreateInvoicePage: React.FC = () => {
                     ? 'deposit'
                     : 'pending',
             customerShipStatus: data.customerShipStatus || editInvoice?.customerShipStatus || 'pending',
+            syncStatus: 'pending',
         };
     };
 
-    const persistInvoice = (invoice: SheetInvoice) => {
-        saveInvoiceToStore(invoice as Invoice);
-        setDraft(`invoice-${invoice.invoiceNumber}`, invoice);
-        setDraft('last-invoice', invoice.invoiceNumber);
+    const persistInvoice = async (invoice: SheetInvoice): Promise<SheetInvoice> => {
+        const localInvoice: SheetInvoice = {
+            ...invoice,
+            syncStatus: 'pending',
+        };
+
+        saveInvoiceToStore(localInvoice as Invoice);
+        setDraft(`invoice-${localInvoice.invoiceNumber}`, localInvoice);
+        setDraft('last-invoice', localInvoice.invoiceNumber);
 
         if (isEditing) {
-            updateInHistory(invoice as Invoice);
+            updateInHistory(localInvoice as Invoice);
         } else {
-            addToHistory(invoice as Invoice);
+            addToHistory(localInvoice as Invoice);
         }
 
         removeDraft(DRAFT_KEY);
-        setIsSaved(true);
 
-        // ✅ Save/edit dono cases me sheet overwrite hogi
-        syncInvoiceToGoogleSheet(
-            invoice,
-            isEditing ? editInvoice : undefined
-        );
+        try {
+            const verifiedInvoice = await syncInvoiceToGoogleSheet(
+                localInvoice,
+                isEditing ? editInvoice : undefined
+            );
+
+            const syncedInvoice: SheetInvoice = {
+                ...localInvoice,
+                ...verifiedInvoice,
+                syncStatus: 'synced',
+            };
+
+            saveInvoiceToStore(syncedInvoice as Invoice);
+            updateInHistory(syncedInvoice as Invoice);
+            setDraft(`invoice-${syncedInvoice.invoiceNumber}`, syncedInvoice);
+            setDraft('last-invoice', syncedInvoice.invoiceNumber);
+
+            return syncedInvoice;
+        } catch (error) {
+            const failedInvoice: SheetInvoice = {
+                ...localInvoice,
+                syncStatus: 'failed',
+            };
+
+            updateInHistory(failedInvoice as Invoice);
+            console.error('Google Sheet save verification failed:', error);
+            throw error;
+        }
     };
 
     const onPreview = (data: any) => {
@@ -347,17 +265,29 @@ export const CreateInvoicePage: React.FC = () => {
         navigate('/invoice/preview');
     };
 
-    const onSave = (data: any) => {
+    const onSave = async (data: any) => {
+        if (isSaving) return;
+
         const number = getUniqueInvoiceNumber(data);
         setValue('invoiceNumber', number);
 
         const invoice = buildInvoice(data, number);
 
-        persistInvoice(invoice);
-        push('Invoice saved successfully');
+        setIsSaving(true);
+
+        try {
+            await persistInvoice(invoice);
+            push('Invoice saved and verified in Google Sheet');
+        } catch {
+            push('Invoice app me save hai, lekin Google Sheet verify nahi hua. Internet/deploy URL check karo.');
+        } finally {
+            setIsSaving(false);
+        }
     };
 
     const shareWhatsApp = async () => {
+        if (isSaving) return;
+
         const itemsCount = fields.length;
         const fieldNames: string[] = ['customerName', 'salesRepresentative'];
 
@@ -385,9 +315,11 @@ export const CreateInvoicePage: React.FC = () => {
 
         const invoice = buildInvoice(data, number);
 
-        persistInvoice(invoice);
+        setIsSaving(true);
 
         try {
+            await persistInvoice(invoice);
+
             if (!pdfRef.current) {
                 push('Preparing invoice. Please try again.');
                 return;
@@ -406,6 +338,7 @@ export const CreateInvoicePage: React.FC = () => {
                     title: `Invoice ${invoice.invoiceNumber}`,
                     text: `Invoice ${invoice.invoiceNumber}`,
                 });
+
                 return;
             }
 
@@ -419,8 +352,10 @@ export const CreateInvoicePage: React.FC = () => {
             const message = buildWhatsappMessage(invoice as Invoice);
             window.open(`https://wa.me/?text=${encodeURIComponent(message)}`);
         } catch (error) {
-            console.error('Failed to generate/share PDF:', error);
-            push('Failed to generate/share PDF');
+            console.error('Failed to save/generate/share PDF:', error);
+            push('Save verify/share failed. Please try again.');
+        } finally {
+            setIsSaving(false);
         }
     };
 
@@ -445,7 +380,6 @@ export const CreateInvoicePage: React.FC = () => {
 
             <main>
                 <div className="create-invoice">
-                    {/* Customer card */}
                     <div className="invoice-card">
                         <div className="customer-row">
                             <span className="label">Customer Name</span>
@@ -471,7 +405,6 @@ export const CreateInvoicePage: React.FC = () => {
                         </div>
                     </div>
 
-                    {/* Items card */}
                     <div className="invoice-card invoice-card--items">
                         <div className="items">
                             <div className="items-label">Items</div>
@@ -534,22 +467,22 @@ export const CreateInvoicePage: React.FC = () => {
                                                 }
                                                 type="number"
                                                 {...register(`items.${idx}.price` as const, {
-    valueAsNumber: true,
-    required: 'Price required',
-    validate: (value) => {
-        const price = Number(value);
+                                                    valueAsNumber: true,
+                                                    required: 'Price required',
+                                                    validate: (value) => {
+                                                        const price = Number(value);
 
-        if (!Number.isFinite(price)) {
-            return 'Price required';
-        }
+                                                        if (!Number.isFinite(price)) {
+                                                            return 'Price required';
+                                                        }
 
-        if (price === 0) {
-            return 'Price cannot be 0';
-        }
+                                                        if (price === 0) {
+                                                            return 'Price cannot be 0';
+                                                        }
 
-        return true;
-    },
-})}
+                                                        return true;
+                                                    },
+                                                })}
                                                 defaultValue={(field as any).price ?? ''}
                                                 placeholder="0"
                                                 onInput={() => {
@@ -594,7 +527,6 @@ export const CreateInvoicePage: React.FC = () => {
                         + Add item
                     </button>
 
-                    {/* Deposit + Total */}
                     <div className="invoice-card invoice-card--summary">
                         <div className="deposit-total-row">
                             <div className="deposit-col">
@@ -627,7 +559,6 @@ export const CreateInvoicePage: React.FC = () => {
                     </div>
                 </div>
 
-                {/* Footer */}
                 <div className="page-footer">
                     <div className="actions actions--three">
                         <button
@@ -642,9 +573,9 @@ export const CreateInvoicePage: React.FC = () => {
                             type="button"
                             className="btn-save"
                             onClick={handleSubmit(onSave)}
-                            disabled={isSaved}
+                            disabled={isSaving}
                         >
-                            {isSaved ? 'Saved' : 'Save'}
+                            {isSaving ? 'Saving...' : 'Save'}
                         </button>
 
                         <button type="button" className="wa" onClick={shareWhatsApp}>
@@ -659,7 +590,6 @@ export const CreateInvoicePage: React.FC = () => {
                 </div>
             </main>
 
-            {/* Hidden print view for PDF generation */}
             <div
                 style={{
                     position: 'fixed',
@@ -684,7 +614,8 @@ export const CreateInvoicePage: React.FC = () => {
                                 ),
                             customerName: watch().customerName || '',
                             salesRepresentative: watch().salesRepresentative || '',
-                            invoiceDate: new Date().toISOString(),
+                            invoiceDate: watch().invoiceDate || new Date().toISOString(),
+                            updatedAt: new Date().toISOString(),
                             items: watch().items || [defaultItem()],
                             subtotal,
                             total,
