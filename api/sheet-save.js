@@ -1,9 +1,7 @@
-const https = require('https');
-
 const APPS_SCRIPT_URL =
   'https://script.google.com/macros/s/AKfycbw89yajiSI_8Y_jBBWS_GeUSUHKuf_bO7O6Tk4KbrRfn8KwzJ9g_QPR0WUeY536qohLxg/exec';
 
-function readBody(req) {
+async function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
 
@@ -19,60 +17,6 @@ function readBody(req) {
   });
 }
 
-function postText(url, payload, redirectCount = 0) {
-  return new Promise((resolve, reject) => {
-    const parsedUrl = new URL(url);
-    const body = JSON.stringify(payload || {});
-
-    const options = {
-      method: 'POST',
-      hostname: parsedUrl.hostname,
-      path: `${parsedUrl.pathname}${parsedUrl.search}`,
-      headers: {
-        'Content-Type': 'text/plain;charset=utf-8',
-        'Content-Length': Buffer.byteLength(body),
-      },
-    };
-
-    const request = https.request(options, (response) => {
-      const statusCode = response.statusCode || 0;
-      const location = response.headers.location;
-
-      if (
-        location &&
-        [301, 302, 303, 307, 308].includes(statusCode) &&
-        redirectCount < 5
-      ) {
-        response.resume();
-        resolve(postText(location, payload, redirectCount + 1));
-        return;
-      }
-
-      let responseBody = '';
-
-      response.on('data', (chunk) => {
-        responseBody += chunk;
-      });
-
-      response.on('end', () => {
-        resolve({
-          statusCode,
-          body: responseBody,
-        });
-      });
-    });
-
-    request.on('error', reject);
-
-    request.setTimeout(15000, function () {
-      this.destroy(new Error('Backend save timed out'));
-    });
-
-    request.write(body);
-    request.end();
-  });
-}
-
 module.exports = async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
 
@@ -84,30 +28,41 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const rawBody = await readBody(req);
-    const payload =
-      typeof req.body === 'object' && req.body
-        ? req.body
-        : JSON.parse(rawBody || '{}');
+    let payload = req.body;
 
-    const result = await postText(APPS_SCRIPT_URL, payload);
+    if (!payload || typeof payload !== 'object') {
+      const rawBody = await readBody(req);
+      payload = JSON.parse(rawBody || '{}');
+    }
+
+    const response = await fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      redirect: 'follow',
+      headers: {
+        'Content-Type': 'text/plain;charset=utf-8',
+        Accept: 'application/json,text/plain,*/*',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const text = await response.text();
 
     let json;
 
     try {
-      json = JSON.parse(result.body);
+      json = JSON.parse(text);
     } catch (error) {
       return res.status(502).json({
         success: false,
-        message: 'Invalid backend save response',
-        preview: String(result.body || '').slice(0, 200),
+        message: 'Invalid Google Sheet save response',
+        preview: String(text || '').slice(0, 300),
       });
     }
 
-    if (result.statusCode < 200 || result.statusCode >= 300 || json.success === false) {
+    if (!response.ok || json.success === false) {
       return res.status(502).json({
         success: false,
-        message: json.message || 'Backend save failed',
+        message: json.message || 'Google Sheet save failed',
       });
     }
 
