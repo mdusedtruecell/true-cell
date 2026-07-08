@@ -149,6 +149,64 @@ export const formatDateForSheet = (dateValue?: string) => {
         .replace(/^(\d{2}) ([A-Za-z]{3}) (\d{4}) (\d{2}):(\d{2})$/, '$1-$2-$3 at $4:$5');
 };
 
+const MONTHS: Record<string, number> = {
+    jan: 0,
+    feb: 1,
+    mar: 2,
+    apr: 3,
+    may: 4,
+    jun: 5,
+    jul: 6,
+    aug: 7,
+    sep: 8,
+    oct: 9,
+    nov: 10,
+    dec: 11,
+};
+
+export const parseSheetDate = (value?: unknown): string => {
+    const raw = cleanText(value)
+        .replace(/-at\s+at\s+/gi, ' at ')
+        .replace(/-at\s+/gi, ' at ')
+        .replace(/\s+at\s+at\s+/gi, ' at ')
+        .replace(/,/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    if (!raw) return '';
+
+    const parsedDirect = Date.parse(raw);
+
+    if (Number.isFinite(parsedDirect)) {
+        return new Date(parsedDirect).toISOString();
+    }
+
+    const match = raw.match(
+        /^(\d{1,2})[-\s]([A-Za-z]{3})[-\s](\d{4})(?:\s+at\s+|\s+)?(?:(\d{1,2}):(\d{2}))?$/i
+    );
+
+    if (match) {
+        const [, dayRaw, monthRaw, yearRaw, hourRaw = '0', minuteRaw = '0'] = match;
+        const month = MONTHS[monthRaw.slice(0, 3).toLowerCase()];
+        const day = Number(dayRaw);
+        const year = Number(yearRaw);
+        const hour = Number(hourRaw);
+        const minute = Number(minuteRaw);
+
+        if (
+            Number.isFinite(day) &&
+            Number.isFinite(year) &&
+            Number.isFinite(month) &&
+            Number.isFinite(hour) &&
+            Number.isFinite(minute)
+        ) {
+            return new Date(Date.UTC(year, month, day, hour - 4, minute, 0)).toISOString();
+        }
+    }
+
+    return raw;
+};
+
 export const getInvoiceKey = (invoice: SheetInvoice): string => {
     return cleanText(invoice.orderId || invoice.invoiceNumber);
 };
@@ -201,14 +259,14 @@ export const mergeInvoices = (localInvoices: SheetInvoice[], sheetInvoices: Shee
         const older = latest === sheetInvoice ? localInvoice : sheetInvoice;
 
         merged.set(key, {
-            ...(older || {}),
-            ...latest,
+            ...((older || {}) as SheetInvoice),
+            ...(latest as SheetInvoice),
             customerShipStatus:
                 localInvoice?.customerShipStatus === 'shipped' || sheetInvoice.customerShipStatus === 'shipped'
                     ? 'shipped'
                     : 'pending',
             orderShipStatus: cleanText(sheetInvoice.orderShipStatus) || localInvoice?.orderShipStatus || '',
-        });
+        } as SheetInvoice);
     });
 
     return Array.from(merged.values())
@@ -331,7 +389,14 @@ export const buildHistoryUrl = (salesPerson?: string, extra?: Record<string, str
     return `/api/sheet-history?${params.toString()}`;
 };
 
-export const fetchSheetHistory = async (url: string): Promise<SheetResponse> => {
+const parseHistoryParams = (url: string): URLSearchParams => {
+    const parsed = new URL(url, window.location.origin);
+    const params = new URLSearchParams(parsed.search);
+    params.delete('_');
+    return params;
+};
+
+const fetchSheetHistoryFromProxy = async (url: string): Promise<SheetResponse> => {
     const response = await fetch(url, {
         method: 'GET',
         cache: 'no-store',
@@ -345,14 +410,102 @@ export const fetchSheetHistory = async (url: string): Promise<SheetResponse> => 
         message: 'Invalid backend response',
     }))) as SheetResponse;
 
-    if (!response.ok || json?.success === false) {
+    if (!response.ok || json?.success === false || !Array.isArray(json.data)) {
         throw new Error(json?.message || 'Could not load invoice history');
     }
 
     return json;
 };
 
-export const postToGoogleSheet = async (payload: Record<string, unknown>) => {
+const fetchSheetHistoryByJsonp = (url: string): Promise<SheetResponse> => {
+    return new Promise((resolve, reject) => {
+        const callbackName = `__truecellInvoiceHistory_${Date.now()}_${Math.random()
+            .toString(36)
+            .slice(2)}`;
+        const params = parseHistoryParams(url);
+        let completed = false;
+        let script: HTMLScriptElement | null = document.createElement('script');
+
+        const cleanup = () => {
+            if (completed) return;
+            completed = true;
+            window.clearTimeout(timeoutId);
+
+            try {
+                delete (window as any)[callbackName];
+            } catch {
+                (window as any)[callbackName] = undefined;
+            }
+
+            if (script?.parentNode) {
+                script.parentNode.removeChild(script);
+            }
+
+            script = null;
+        };
+
+        const timeoutId = window.setTimeout(() => {
+            cleanup();
+            reject(new Error('Google Sheet request timed out'));
+        }, 20000);
+
+        (window as any)[callbackName] = (json: SheetResponse) => {
+            cleanup();
+
+            if (!json?.success || !Array.isArray(json.data)) {
+                reject(new Error(json?.message || 'Invalid Google Sheet response'));
+                return;
+            }
+
+            resolve(json);
+        };
+
+        params.set('callback', callbackName);
+        params.set('_', String(Date.now()));
+
+        script.onerror = () => {
+            cleanup();
+            reject(new Error('Could not connect to Google Sheet'));
+        };
+        script.async = true;
+        script.src = `${GOOGLE_SHEET_WEB_APP_URL}?${params.toString()}`;
+        document.body.appendChild(script);
+    });
+};
+
+export const fetchSheetHistory = async (url: string): Promise<SheetResponse> => {
+    try {
+        return await fetchSheetHistoryFromProxy(url);
+    } catch (proxyError) {
+        console.warn('Proxy history load failed, trying Apps Script JSONP fallback:', proxyError);
+        return fetchSheetHistoryByJsonp(url);
+    }
+};
+
+const postToSheetProxy = async (payload: Record<string, unknown>) => {
+    const response = await fetch('/api/sheet-save', {
+        method: 'POST',
+        cache: 'no-store',
+        headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+        },
+        body: JSON.stringify(payload),
+    });
+
+    const json = (await response.json().catch(() => ({
+        success: false,
+        message: 'Invalid backend save response',
+    }))) as Record<string, unknown>;
+
+    if (!response.ok || json?.success === false) {
+        throw new Error(cleanText(json?.message) || 'Google Sheet save failed');
+    }
+
+    return json;
+};
+
+const postToSheetDirect = async (payload: Record<string, unknown>) => {
     await fetch(GOOGLE_SHEET_WEB_APP_URL, {
         method: 'POST',
         mode: 'no-cors',
@@ -365,7 +518,17 @@ export const postToGoogleSheet = async (payload: Record<string, unknown>) => {
 
     return {
         success: true,
+        directFallback: true,
     };
+};
+
+export const postToGoogleSheet = async (payload: Record<string, unknown>) => {
+    try {
+        return await postToSheetProxy(payload);
+    } catch (proxyError) {
+        console.warn('Proxy save failed, trying Apps Script direct fallback:', proxyError);
+        return postToSheetDirect(payload);
+    }
 };
 
 const normalizeInvoiceItems = (invoice: SheetInvoice): InvoiceItem[] => {
@@ -433,18 +596,21 @@ export const syncInvoiceToGoogleSheet = async (
         })),
     };
 
-    void postToGoogleSheet(payload).catch((error) => {
-        console.error('Background sheet save failed:', error);
-    });
+    const response = (await postToGoogleSheet(payload)) as {
+        updatedAt?: unknown;
+        revision?: unknown;
+        directFallback?: boolean;
+    };
 
     return {
         ...invoice,
         orderId,
-        updatedAt: invoice.updatedAt || now,
-        revision: invoice.revision || revision,
-        syncStatus: 'synced',
+        updatedAt: cleanText(response.updatedAt) || invoice.updatedAt || now,
+        revision: cleanText(response.revision) || invoice.revision || revision,
+        syncStatus: response.directFallback ? 'pending' : 'synced',
     };
 };
+
 export const cancelInvoiceInGoogleSheet = (invoice: SheetInvoice) => {
     const orderId = cleanText(invoice.orderId || invoice.invoiceNumber);
     const invoiceNumber = cleanText(invoice.invoiceNumber);

@@ -27,7 +27,6 @@ import plusIcon from '../../assets/plus_icon.png';
 import editIcon from '../../assets/edit_i.png';
 
 const HISTORY_REFRESH_MS = 15000;
-const LOCAL_PENDING_KEEP_MS = 120000;
 
 const ShipIcon = () => (
     <svg
@@ -63,14 +62,6 @@ const isCancelledByKey = (invoice: SheetInvoice, cancelledKeys: string[]) => {
     return cancelledKeys.some((cancelledKey) => {
         return cancelledKey === key || cancelledKey === invoiceNumber || cancelledKey === orderId;
     });
-};
-
-const isRecentLocalInvoice = (invoice: SheetInvoice) => {
-    const timestamp = getSortTimestamp(invoice);
-
-    if (!timestamp) return false;
-
-    return Date.now() - timestamp < LOCAL_PENDING_KEEP_MS;
 };
 
 export const HistoryPage: React.FC = () => {
@@ -131,28 +122,7 @@ export const HistoryPage: React.FC = () => {
             return localRepInvoices;
         }
 
-        const sheetKeys = new Set<string>();
-
-        sheetActiveInvoices.forEach((invoice) => {
-            sheetKeys.add(getInvoiceKey(invoice));
-            sheetKeys.add(cleanText(invoice.invoiceNumber));
-            sheetKeys.add(cleanText(invoice.orderId));
-        });
-
-        const recentLocalOnly = localRepInvoices.filter((invoice) => {
-            const key = getInvoiceKey(invoice);
-            const invoiceNumber = cleanText(invoice.invoiceNumber);
-            const orderId = cleanText(invoice.orderId);
-
-            const existsInSheet =
-                sheetKeys.has(key) ||
-                sheetKeys.has(invoiceNumber) ||
-                sheetKeys.has(orderId);
-
-            return !existsInSheet && isRecentLocalInvoice(invoice);
-        });
-
-        return mergeInvoices(recentLocalOnly, sheetActiveInvoices)
+        return mergeInvoices(localRepInvoices, sheetActiveInvoices)
             .filter((invoice) => !isCancelledByKey(invoice, cancelledInvoiceKeys))
             .sort((a, b) => getSortTimestamp(b) - getSortTimestamp(a));
     }, [cancelledInvoiceKeys, hasLoadedHistory, localRepInvoices, sheetActiveInvoices]);
@@ -193,30 +163,8 @@ export const HistoryPage: React.FC = () => {
                 setHasLoadedHistory(true);
                 setHistoryError('');
 
-                const liveKeys = new Set<string>();
-
                 invoices.forEach((invoice) => {
-                    liveKeys.add(getInvoiceKey(invoice));
-                    liveKeys.add(cleanText(invoice.invoiceNumber));
-                    liveKeys.add(cleanText(invoice.orderId));
                     updateInHistory(invoice as Invoice);
-                });
-
-                localRepInvoices.forEach((localInvoice) => {
-                    const key = getInvoiceKey(localInvoice);
-                    const invoiceNumber = cleanText(localInvoice.invoiceNumber);
-                    const orderId = cleanText(localInvoice.orderId);
-
-                    const existsInSheet =
-                        liveKeys.has(key) ||
-                        liveKeys.has(invoiceNumber) ||
-                        liveKeys.has(orderId);
-
-                    const isRecent = isRecentLocalInvoice(localInvoice);
-
-                    if (!existsInSheet && !isRecent) {
-                        deleteFromHistory(key || invoiceNumber || orderId);
-                    }
                 });
             } catch (error) {
                 console.error('History sync failed:', error);
@@ -229,8 +177,6 @@ export const HistoryPage: React.FC = () => {
         },
         [
             cancelledInvoiceKeys,
-            deleteFromHistory,
-            localRepInvoices,
             loggedInRep?.name,
             updateInHistory,
         ]
