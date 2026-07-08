@@ -205,52 +205,41 @@ export const CreateInvoicePage: React.FC = () => {
     };
 
     const persistInvoice = async (invoice: SheetInvoice): Promise<SheetInvoice> => {
-        const localInvoice: SheetInvoice = {
-            ...invoice,
-            syncStatus: 'pending',
-        };
-
-        saveInvoiceToStore(localInvoice as Invoice);
-        setDraft(`invoice-${localInvoice.invoiceNumber}`, localInvoice);
-        setDraft('last-invoice', localInvoice.invoiceNumber);
-
-        if (isEditing) {
-            updateInHistory(localInvoice as Invoice);
-        } else {
-            addToHistory(localInvoice as Invoice);
-        }
-
-        removeDraft(DRAFT_KEY);
-
-        try {
-            const verifiedInvoice = await syncInvoiceToGoogleSheet(
-                localInvoice,
-                isEditing ? editInvoice : undefined
-            );
-
-            const syncedInvoice: SheetInvoice = {
-                ...localInvoice,
-                ...verifiedInvoice,
-                syncStatus: 'synced',
-            };
-
-            saveInvoiceToStore(syncedInvoice as Invoice);
-            updateInHistory(syncedInvoice as Invoice);
-            setDraft(`invoice-${syncedInvoice.invoiceNumber}`, syncedInvoice);
-            setDraft('last-invoice', syncedInvoice.invoiceNumber);
-
-            return syncedInvoice;
-        } catch (error) {
-            const failedInvoice: SheetInvoice = {
-                ...localInvoice,
-                syncStatus: 'failed',
-            };
-
-            updateInHistory(failedInvoice as Invoice);
-            console.error('Google Sheet save verification failed:', error);
-            throw error;
-        }
+    const localInvoice: SheetInvoice = {
+        ...invoice,
+        syncStatus: 'pending',
     };
+
+    saveInvoiceToStore(localInvoice as Invoice);
+    setDraft(`invoice-${localInvoice.invoiceNumber}`, localInvoice);
+    setDraft('last-invoice', localInvoice.invoiceNumber);
+
+    if (isEditing) {
+        updateInHistory(localInvoice as Invoice);
+    } else {
+        addToHistory(localInvoice as Invoice);
+    }
+
+    removeDraft(DRAFT_KEY);
+
+    const syncedInvoice = await syncInvoiceToGoogleSheet(
+        localInvoice,
+        isEditing ? editInvoice : undefined
+    );
+
+    const finalInvoice: SheetInvoice = {
+        ...localInvoice,
+        ...syncedInvoice,
+        syncStatus: 'synced',
+    };
+
+    saveInvoiceToStore(finalInvoice as Invoice);
+    updateInHistory(finalInvoice as Invoice);
+    setDraft(`invoice-${finalInvoice.invoiceNumber}`, finalInvoice);
+    setDraft('last-invoice', finalInvoice.invoiceNumber);
+
+    return finalInvoice;
+};
 
     const onPreview = (data: any) => {
         const number = getUniqueInvoiceNumber(data);
@@ -266,98 +255,102 @@ export const CreateInvoicePage: React.FC = () => {
     };
 
     const onSave = async (data: any) => {
-        if (isSaving) return;
+    if (isSaving) return;
 
-        const number = getUniqueInvoiceNumber(data);
-        setValue('invoiceNumber', number);
+    const number = getUniqueInvoiceNumber(data);
+    setValue('invoiceNumber', number);
 
-        const invoice = buildInvoice(data, number);
+    const invoice = buildInvoice(data, number);
 
-        setIsSaving(true);
+    setIsSaving(true);
 
-        try {
-            await persistInvoice(invoice);
-            push('Invoice saved and verified in Google Sheet');
-        } catch {
-            push('Invoice app me save hai, lekin Google Sheet verify nahi hua. Internet/deploy URL check karo.');
-        } finally {
-            setIsSaving(false);
-        }
-    };
+    try {
+        await persistInvoice(invoice);
+        push('Invoice saved successfully');
+    } catch (error) {
+        console.error('Invoice save failed:', error);
+        push('Could not save invoice. Please check your internet and try again.');
+    } finally {
+        setIsSaving(false);
+    }
+};
 
     const shareWhatsApp = async () => {
-        if (isSaving) return;
+    if (isSaving) {
+        push('Please wait, invoice is saving.');
+        return;
+    }
 
-        const itemsCount = fields.length;
-        const fieldNames: string[] = ['customerName', 'salesRepresentative'];
+    const itemsCount = fields.length;
+    const fieldNames: string[] = ['customerName', 'salesRepresentative'];
 
-        for (let i = 0; i < itemsCount; i++) {
-            fieldNames.push(`items.${i}.model`, `items.${i}.qty`, `items.${i}.price`);
-        }
+    for (let i = 0; i < itemsCount; i++) {
+        fieldNames.push(`items.${i}.model`, `items.${i}.qty`, `items.${i}.price`);
+    }
 
-        const currentRep = watch().salesRepresentative || selectedRep;
+    const currentRep = watch().salesRepresentative || selectedRep;
 
-        if (!currentRep) {
-            push('Please select a sales representative before sharing');
+    if (!currentRep) {
+        push('Please select a sales representative before sharing');
+        return;
+    }
+
+    const allValid = await trigger(fieldNames as any);
+
+    if (!allValid) {
+        push('Please fill all required fields before sharing');
+        return;
+    }
+
+    const data = watch();
+    const number = getUniqueInvoiceNumber(data);
+    setValue('invoiceNumber', number);
+
+    const invoice = buildInvoice(data, number);
+
+    setIsSaving(true);
+
+    try {
+        const savedInvoice = await persistInvoice(invoice);
+
+        if (!pdfRef.current) {
+            push('Preparing invoice. Please try again.');
             return;
         }
 
-        const allValid = await trigger(fieldNames as any);
+        const blob = await generatePdf(pdfRef.current);
+        const file = new File([blob], getPdfFilename(savedInvoice as Invoice), {
+            type: 'application/pdf',
+        });
 
-        if (!allValid) {
-            push('Please fill all required fields before sharing');
-            return;
-        }
-
-        const data = watch();
-        const number = getUniqueInvoiceNumber(data);
-        setValue('invoiceNumber', number);
-
-        const invoice = buildInvoice(data, number);
-
-        setIsSaving(true);
-
-        try {
-            await persistInvoice(invoice);
-
-            if (!pdfRef.current) {
-                push('Preparing invoice. Please try again.');
-                return;
-            }
-
-            const blob = await generatePdf(pdfRef.current);
-            const file = new File([blob], getPdfFilename(invoice as Invoice), {
-                type: 'application/pdf',
+        // @ts-ignore - browser support depends on device
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            // @ts-ignore - browser support depends on device
+            await navigator.share({
+                files: [file],
+                title: `Invoice ${savedInvoice.invoiceNumber}`,
+                text: `Invoice ${savedInvoice.invoiceNumber}`,
             });
 
-            // @ts-ignore - browser support depends on device
-            if (navigator.canShare && navigator.canShare({ files: [file] })) {
-                // @ts-ignore - browser support depends on device
-                await navigator.share({
-                    files: [file],
-                    title: `Invoice ${invoice.invoiceNumber}`,
-                    text: `Invoice ${invoice.invoiceNumber}`,
-                });
-
-                return;
-            }
-
-            const url = URL.createObjectURL(blob);
-            window.open(url, '_blank');
-
-            setTimeout(() => {
-                URL.revokeObjectURL(url);
-            }, 10000);
-
-            const message = buildWhatsappMessage(invoice as Invoice);
-            window.open(`https://wa.me/?text=${encodeURIComponent(message)}`);
-        } catch (error) {
-            console.error('Failed to save/generate/share PDF:', error);
-            push('Save verify/share failed. Please try again.');
-        } finally {
-            setIsSaving(false);
+            return;
         }
-    };
+
+        const url = URL.createObjectURL(blob);
+        window.open(url, '_blank');
+
+        setTimeout(() => {
+            URL.revokeObjectURL(url);
+        }, 10000);
+
+        const message = buildWhatsappMessage(savedInvoice as Invoice);
+        window.open(`https://wa.me/?text=${encodeURIComponent(message)}`);
+    } catch (error) {
+        console.error('Failed to save/generate/share PDF:', error);
+        push('Could not save or share invoice. Please try again.');
+    } finally {
+        setIsSaving(false);
+    }
+};
 
     const watchedDeposit = watch('depositAmount');
     const watchedPaymentReceived = watch('paymentReceived');

@@ -17,8 +17,6 @@ import {
     getInvoiceKey,
     getSortTimestamp,
     groupSheetRowsToInvoices,
-    mergeInvoices,
-    normalizeOrderStatus,
     updateCustomerShipInGoogleSheet,
 } from 'utils/googleSheet';
 import whatsappIcon from '../../assets/whatsapp.png';
@@ -26,7 +24,7 @@ import deleteIcon from '../../assets/delete.png';
 import plusIcon from '../../assets/plus_icon.png';
 import editIcon from '../../assets/edit_i.png';
 
-const HISTORY_REFRESH_MS = 25000;
+const HISTORY_REFRESH_MS = 10000;
 
 const ShipIcon = () => (
     <svg
@@ -59,59 +57,53 @@ export const HistoryPage: React.FC = () => {
     const { push } = useToast();
 
     const loggedInRep = useInvoiceStore((s: any) => s.loggedInRep);
-    const invoiceHistory: SheetInvoice[] = useInvoiceStore((s: any) => s.invoiceHistory);
     const deleteFromHistory = useInvoiceStore((s: any) => s.deleteFromHistory);
     const saveInvoice = useInvoiceStore((s: any) => s.saveInvoice);
     const updateInHistory = useInvoiceStore((s: any) => s.updateInHistory);
 
     const [sheetInvoices, setSheetInvoices] = useState<SheetInvoice[]>([]);
     const [isSyncing, setIsSyncing] = useState(false);
+    const [hasLoadedHistory, setHasLoadedHistory] = useState(false);
+    const [historyError, setHistoryError] = useState('');
     const [cancelTarget, setCancelTarget] = useState<SheetInvoice | null>(null);
     const [shipTarget, setShipTarget] = useState<SheetInvoice | null>(null);
     const [shareInvoice, setShareInvoice] = useState<SheetInvoice | null>(null);
     const [hiddenInvoiceKeys, setHiddenInvoiceKeys] = useState<string[]>([]);
 
     const pdfRef = useRef<HTMLDivElement | null>(null);
-    const hasShownSyncWarningRef = useRef(false);
-
-    const localRepInvoices = useMemo(() => {
-        return invoiceHistory.filter((inv) => {
-            const isSameRep =
-                cleanText(inv.salesRepresentative).toLowerCase() ===
-                cleanText(loggedInRep?.name).toLowerCase();
-
-            const isActive = normalizeOrderStatus(inv.orderStatus) !== 'Cancel';
-
-            return isSameRep && isActive;
-        });
-    }, [invoiceHistory, loggedInRep?.name]);
+    const loadingRef = useRef(false);
 
     const repInvoices = useMemo(() => {
         const hiddenSet = new Set(hiddenInvoiceKeys);
 
-        return mergeInvoices(localRepInvoices, sheetInvoices).filter(
-            (invoice) => !hiddenSet.has(getInvoiceKey(invoice))
-        );
-    }, [hiddenInvoiceKeys, localRepInvoices, sheetInvoices]);
+        return sheetInvoices
+            .filter((invoice) => !hiddenSet.has(getInvoiceKey(invoice)))
+            .sort((a, b) => getSortTimestamp(b) - getSortTimestamp(a));
+    }, [hiddenInvoiceKeys, sheetInvoices]);
 
     const totalAmount = repInvoices.reduce((sum, inv) => sum + inv.total, 0);
 
     const loadHistoryFromSheet = useCallback(
-        async (options?: { showWarning?: boolean }) => {
+        async () => {
             if (!loggedInRep?.name) return;
+            if (loadingRef.current) return;
 
+            loadingRef.current = true;
             setIsSyncing(true);
 
             try {
                 const json = await fetchSheetHistory(buildHistoryUrl(loggedInRep.name));
 
                 if (!json?.success || !Array.isArray(json.data)) {
-                    throw new Error(json?.message || 'Invalid Google Sheet response');
+                    throw new Error(json?.message || 'Invalid backend response');
                 }
 
-                const invoices = groupSheetRowsToInvoices(json.data as SheetRow[]);
+                const invoices = groupSheetRowsToInvoices(json.data as SheetRow[])
+                    .sort((a, b) => getSortTimestamp(b) - getSortTimestamp(a));
 
                 setSheetInvoices(invoices);
+                setHasLoadedHistory(true);
+                setHistoryError('');
 
                 setHiddenInvoiceKeys((current) => {
                     if (current.length === 0) return current;
@@ -121,31 +113,25 @@ export const HistoryPage: React.FC = () => {
                     return current.filter((key) => liveKeys.has(key));
                 });
 
-                [...invoices]
-                    .sort((a, b) => getSortTimestamp(a) - getSortTimestamp(b))
-                    .forEach((invoice) => {
-                        updateInHistory(invoice as Invoice);
-                    });
-
-                hasShownSyncWarningRef.current = false;
+                invoices.forEach((invoice) => {
+                    updateInHistory(invoice as Invoice);
+                });
             } catch (error) {
-                console.error('Failed to load Google Sheet history:', error);
-
-                if (options?.showWarning && !hasShownSyncWarningRef.current) {
-                    hasShownSyncWarningRef.current = true;
-                    push('Google Sheet sync slow hai. Local history visible rahegi.');
-                }
+                console.error('Failed to load invoice history:', error);
+                setHistoryError('Could not load latest invoices. Please refresh and try again.');
+                setHasLoadedHistory(true);
             } finally {
+                loadingRef.current = false;
                 setIsSyncing(false);
             }
         },
-        [loggedInRep?.name, push, updateInHistory]
+        [loggedInRep?.name, updateInHistory]
     );
 
     useEffect(() => {
         if (!loggedInRep?.name) return;
 
-        void loadHistoryFromSheet({ showWarning: true });
+        void loadHistoryFromSheet();
 
         const intervalId = window.setInterval(() => {
             void loadHistoryFromSheet();
@@ -177,13 +163,6 @@ export const HistoryPage: React.FC = () => {
 
         const key = getInvoiceKey(cancelTarget);
 
-        void cancelInvoiceInGoogleSheet(cancelTarget).then(() => {
-            window.setTimeout(() => void loadHistoryFromSheet(), 1500);
-            window.setTimeout(() => void loadHistoryFromSheet(), 5000);
-        });
-
-        deleteFromHistory(cancelTarget.invoiceNumber);
-
         setHiddenInvoiceKeys((current) =>
             current.includes(key) ? current : [...current, key]
         );
@@ -192,8 +171,14 @@ export const HistoryPage: React.FC = () => {
             current.filter((invoice) => getInvoiceKey(invoice) !== key)
         );
 
+        deleteFromHistory(cancelTarget.invoiceNumber);
         setCancelTarget(null);
         push('Order cancelled successfully');
+
+        void cancelInvoiceInGoogleSheet(cancelTarget).then(() => {
+            window.setTimeout(() => void loadHistoryFromSheet(), 1200);
+            window.setTimeout(() => void loadHistoryFromSheet(), 3500);
+        });
     };
 
     const confirmCustomerShip = () => {
@@ -208,31 +193,27 @@ export const HistoryPage: React.FC = () => {
 
         const updatedKey = getInvoiceKey(updatedInvoice);
 
-        void updateCustomerShipInGoogleSheet(updatedInvoice).then(() => {
-            window.setTimeout(() => void loadHistoryFromSheet(), 1500);
-            window.setTimeout(() => void loadHistoryFromSheet(), 5000);
-        });
-
-        setSheetInvoices((current) => {
-            let found = false;
-
-            const next = current.map((item) => {
-                if (getInvoiceKey(item) !== updatedKey) return item;
-
-                found = true;
-
-                return {
-                    ...item,
-                    customerShipStatus: 'shipped' as const,
-                };
-            });
-
-            return found ? next : [...next, updatedInvoice];
-        });
+        setSheetInvoices((current) =>
+            current.map((item) =>
+                getInvoiceKey(item) === updatedKey
+                    ? {
+                          ...item,
+                          customerShipStatus: 'shipped' as const,
+                          updatedAt: updatedInvoice.updatedAt,
+                          revision: updatedInvoice.revision,
+                      }
+                    : item
+            )
+        );
 
         updateInHistory(updatedInvoice as Invoice);
         setShipTarget(null);
         push('Order marked as shipped');
+
+        void updateCustomerShipInGoogleSheet(updatedInvoice).then(() => {
+            window.setTimeout(() => void loadHistoryFromSheet(), 1200);
+            window.setTimeout(() => void loadHistoryFromSheet(), 3500);
+        });
     };
 
     const handleShare = (invoice: SheetInvoice) => {
@@ -329,6 +310,18 @@ export const HistoryPage: React.FC = () => {
         };
     };
 
+    const emptyMessage = () => {
+        if (!hasLoadedHistory || isSyncing) {
+            return 'Syncing latest invoices...';
+        }
+
+        if (historyError) {
+            return historyError;
+        }
+
+        return 'No invoices yet.';
+    };
+
     return (
         <div className="page history-page">
             <div className="history-header">
@@ -350,9 +343,9 @@ export const HistoryPage: React.FC = () => {
             <main className="history-list-container">
                 {repInvoices.length === 0 ? (
                     <div className="history-empty">
-                        <p>{isSyncing ? 'Loading invoices...' : 'No invoices yet.'}</p>
+                        <p>{emptyMessage()}</p>
 
-                        {!isSyncing && (
+                        {hasLoadedHistory && !historyError && !isSyncing && (
                             <p>
                                 Tap <strong>+</strong> to create your first invoice.
                             </p>
@@ -490,7 +483,7 @@ export const HistoryPage: React.FC = () => {
             <ConfirmDialog
                 open={!!cancelTarget}
                 title="Cancel Order"
-                description="Are you sure you want to cancel this order? It will be removed from app history, but it will stay in Google Sheet as Cancel."
+                description="Are you sure you want to cancel this order? It will be removed from invoice history, but it will stay in Google Sheet as Cancel."
                 confirmLabel="Cancel Order"
                 onConfirm={confirmCancel}
                 onClose={() => setCancelTarget(null)}
@@ -499,7 +492,7 @@ export const HistoryPage: React.FC = () => {
             <ConfirmDialog
                 open={!!shipTarget}
                 title="Ship Order"
-                description="Do you want to mark this order as shipped? After confirmation, this order will show as Shipped in invoice history and Google Sheet."
+                description="Do you want to mark this order as shipped?"
                 confirmLabel="Shipped"
                 onConfirm={confirmCustomerShip}
                 onClose={() => setShipTarget(null)}

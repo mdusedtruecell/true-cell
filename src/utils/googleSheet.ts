@@ -361,17 +361,7 @@ export const jsonpRequest = <T,>(url: string): Promise<T> => {
 };
 
 export const fetchSheetHistory = async (url: string): Promise<SheetResponse> => {
-    try {
-        const response = await fetch(url, {
-            method: 'GET',
-            cache: 'no-store',
-        });
-
-        return (await response.json()) as SheetResponse;
-    } catch (error) {
-        console.warn('Normal Google Sheet fetch failed. Trying JSONP fallback.', error);
-        return jsonpRequest<SheetResponse>(url);
-    }
+    return jsonpRequest<SheetResponse>(url);
 };
 
 const delay = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -483,13 +473,15 @@ export const syncInvoiceToGoogleSheet = async (
     previousInvoice?: SheetInvoice
 ): Promise<SheetInvoice> => {
     const orderId = invoice.orderId || generateOrderId();
+    const now = new Date().toISOString();
+    const revision = Date.now();
 
     const payload = {
         action: 'save',
         orderId,
         previousOrderId: previousInvoice?.orderId || previousInvoice?.invoiceNumber || '',
         previousInvoiceNo: previousInvoice?.invoiceNumber || '',
-        date: formatDateForSheet(invoice.updatedAt || invoice.invoiceDate),
+        date: formatDateForSheet(invoice.updatedAt || invoice.invoiceDate || now),
         invoiceNo: invoice.invoiceNumber,
         customer: invoice.customerName,
         salesPerson: invoice.salesRepresentative,
@@ -501,16 +493,19 @@ export const syncInvoiceToGoogleSheet = async (
             id: item.id || uuid(),
             model: item.model,
             qty: toNumber(item.qty),
-            price: toNumber(item.price),
+            price: Number(item.price),
         })),
     };
 
     await postToGoogleSheet(payload);
 
-    return verifyInvoiceInSheet({
+    return {
         ...invoice,
         orderId,
-    });
+        updatedAt: invoice.updatedAt || now,
+        revision: invoice.revision || revision,
+        syncStatus: 'synced',
+    };
 };
 
 export const cancelInvoiceInGoogleSheet = (invoice: SheetInvoice) => {
