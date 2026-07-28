@@ -50,14 +50,31 @@ const ShipIcon = () => (
             strokeWidth="1.8"
             strokeLinejoin="round"
         />
-        <circle cx="7" cy="18" r="1.8" stroke="currentColor" strokeWidth="1.8" />
-        <circle cx="18" cy="18" r="1.8" stroke="currentColor" strokeWidth="1.8" />
+        <circle
+            cx="7"
+            cy="18"
+            r="1.8"
+            stroke="currentColor"
+            strokeWidth="1.8"
+        />
+        <circle
+            cx="18"
+            cy="18"
+            r="1.8"
+            stroke="currentColor"
+            strokeWidth="1.8"
+        />
     </svg>
 );
 
-const isCancelledByKey = (invoice: SheetInvoice, cancelledKeys: string[]) => {
+const isCancelledByKey = (
+    invoice: SheetInvoice,
+    cancelledKeys: string[]
+) => {
     const key = getInvoiceKey(invoice);
-    const invoiceNumber = cleanText(invoice.invoiceNumber);
+    const invoiceNumber = cleanText(
+        invoice.invoiceNumber
+    );
     const orderId = cleanText(invoice.orderId);
 
     return cancelledKeys.some((cancelledKey) => {
@@ -73,59 +90,101 @@ export const HistoryPage: React.FC = () => {
     const navigate = useNavigate();
     const { push } = useToast();
 
-    const loggedInRep = useInvoiceStore((s: any) => s.loggedInRep);
-    const invoiceHistory: SheetInvoice[] = useInvoiceStore(
-        (s: any) => s.invoiceHistory
+    const loggedInRep = useInvoiceStore(
+        (s: any) => s.loggedInRep
     );
-    const cancelledInvoiceKeys: string[] = useInvoiceStore(
-        (s: any) => s.cancelledInvoiceKeys || []
-    );
+
+    const invoiceHistory: SheetInvoice[] =
+        useInvoiceStore(
+            (s: any) => s.invoiceHistory
+        );
+
+    const cancelledInvoiceKeys: string[] =
+        useInvoiceStore(
+            (s: any) =>
+                s.cancelledInvoiceKeys || []
+        );
+
     const deleteFromHistory = useInvoiceStore(
         (s: any) => s.deleteFromHistory
     );
-    const addCancelledInvoiceKey = useInvoiceStore(
-        (s: any) => s.addCancelledInvoiceKey
+
+    const addCancelledInvoiceKey =
+        useInvoiceStore(
+            (s: any) =>
+                s.addCancelledInvoiceKey
+        );
+
+    const saveInvoice = useInvoiceStore(
+        (s: any) => s.saveInvoice
     );
-    const saveInvoice = useInvoiceStore((s: any) => s.saveInvoice);
+
     const updateInHistory = useInvoiceStore(
         (s: any) => s.updateInHistory
     );
 
-    const [sheetInvoices, setSheetInvoices] = useState<SheetInvoice[]>([]);
-    const [isSyncing, setIsSyncing] = useState(false);
-    const [hasLoadedHistory, setHasLoadedHistory] = useState(false);
-    const [historyError, setHistoryError] = useState('');
+    const [sheetInvoices, setSheetInvoices] =
+        useState<SheetInvoice[]>([]);
+
+    const [isSyncing, setIsSyncing] =
+        useState(false);
+
+    const [
+        hasLoadedHistory,
+        setHasLoadedHistory,
+    ] = useState(false);
+
+    const [historyError, setHistoryError] =
+        useState('');
+
     const [cancelTarget, setCancelTarget] =
         useState<SheetInvoice | null>(null);
+
     const [shipTarget, setShipTarget] =
         useState<SheetInvoice | null>(null);
+
     const [shareInvoice, setShareInvoice] =
         useState<SheetInvoice | null>(null);
 
-    const pdfRef = useRef<HTMLDivElement | null>(null);
+    const pdfRef =
+        useRef<HTMLDivElement | null>(null);
+
     const loadingRef = useRef(false);
+
     const lastHistoryLoadRef = useRef(0);
 
     const localRepInvoices = useMemo(() => {
         return invoiceHistory
             .filter((invoice) => {
                 const sameRep =
-                    cleanText(invoice.salesRepresentative).toLowerCase() ===
-                    cleanText(loggedInRep?.name).toLowerCase();
+                    cleanText(
+                        invoice.salesRepresentative
+                    ).toLowerCase() ===
+                    cleanText(
+                        loggedInRep?.name
+                    ).toLowerCase();
 
                 const active =
-                    normalizeOrderStatus(invoice.orderStatus) !== 'Cancel';
+                    normalizeOrderStatus(
+                        invoice.orderStatus
+                    ) !== 'Cancel';
 
-                const cancelled = isCancelledByKey(
-                    invoice,
-                    cancelledInvoiceKeys
+                const cancelled =
+                    isCancelledByKey(
+                        invoice,
+                        cancelledInvoiceKeys
+                    );
+
+                return (
+                    sameRep &&
+                    active &&
+                    !cancelled
                 );
-
-                return sameRep && active && !cancelled;
             })
             .sort(
                 (a, b) =>
-                    getSortTimestamp(b) - getSortTimestamp(a)
+                    getSortTimestamp(b) -
+                    getSortTimestamp(a)
             );
     }, [
         cancelledInvoiceKeys,
@@ -133,24 +192,35 @@ export const HistoryPage: React.FC = () => {
         loggedInRep?.name,
     ]);
 
-    const sheetActiveInvoices = useMemo(() => {
-        return sheetInvoices
-            .filter((invoice) => {
-                const active =
-                    normalizeOrderStatus(invoice.orderStatus) !== 'Cancel';
+    const sheetActiveInvoices =
+        useMemo(() => {
+            return sheetInvoices
+                .filter((invoice) => {
+                    const active =
+                        normalizeOrderStatus(
+                            invoice.orderStatus
+                        ) !== 'Cancel';
 
-                const cancelled = isCancelledByKey(
-                    invoice,
-                    cancelledInvoiceKeys
+                    const cancelled =
+                        isCancelledByKey(
+                            invoice,
+                            cancelledInvoiceKeys
+                        );
+
+                    return (
+                        active &&
+                        !cancelled
+                    );
+                })
+                .sort(
+                    (a, b) =>
+                        getSortTimestamp(b) -
+                        getSortTimestamp(a)
                 );
-
-                return active && !cancelled;
-            })
-            .sort(
-                (a, b) =>
-                    getSortTimestamp(b) - getSortTimestamp(a)
-            );
-    }, [cancelledInvoiceKeys, sheetInvoices]);
+        }, [
+            cancelledInvoiceKeys,
+            sheetInvoices,
+        ]);
 
     const repInvoices = useMemo(() => {
         if (!hasLoadedHistory) {
@@ -170,7 +240,8 @@ export const HistoryPage: React.FC = () => {
             )
             .sort(
                 (a, b) =>
-                    getSortTimestamp(b) - getSortTimestamp(a)
+                    getSortTimestamp(b) -
+                    getSortTimestamp(a)
             );
     }, [
         cancelledInvoiceKeys,
@@ -184,96 +255,115 @@ export const HistoryPage: React.FC = () => {
         0
     );
 
-    const loadHistoryFromSheet = useCallback(
-        async (force = false) => {
-            if (!loggedInRep?.name) {
-                setHasLoadedHistory(true);
-                setIsSyncing(false);
-                return;
-            }
-
-            if (loadingRef.current) {
-                return;
-            }
-
-            if (
-                !force &&
-                Date.now() - lastHistoryLoadRef.current <
-                    HISTORY_MIN_REFRESH_GAP_MS
-            ) {
-                return;
-            }
-
-            loadingRef.current = true;
-            lastHistoryLoadRef.current = Date.now();
-
-            setIsSyncing(true);
-            setHistoryError('');
-
-            try {
-                const json = await fetchSheetHistory(
-                    buildHistoryUrl(loggedInRep.name)
-                );
-
-                if (
-                    !json?.success ||
-                    !Array.isArray(json.data)
-                ) {
-                    throw new Error(
-                        json?.message ||
-                            'Invalid invoice history response'
-                    );
+    const loadHistoryFromSheet =
+        useCallback(
+            async (force = false) => {
+                if (!loggedInRep?.name) {
+                    setHasLoadedHistory(true);
+                    setIsSyncing(false);
+                    return;
                 }
 
-                const invoices = groupSheetRowsToInvoices(
-                    json.data as SheetRow[]
-                )
-                    .filter((invoice) => {
-                        return (
-                            normalizeOrderStatus(
-                                invoice.orderStatus
-                            ) !== 'Cancel' &&
-                            !isCancelledByKey(
-                                invoice,
-                                cancelledInvoiceKeys
-                            )
-                        );
-                    })
-                    .sort(
-                        (a, b) =>
-                            getSortTimestamp(b) -
-                            getSortTimestamp(a)
-                    );
+                if (loadingRef.current) {
+                    return;
+                }
 
-                setSheetInvoices(invoices);
-                setHasLoadedHistory(true);
+                if (
+                    !force &&
+                    Date.now() -
+                        lastHistoryLoadRef.current <
+                        HISTORY_MIN_REFRESH_GAP_MS
+                ) {
+                    return;
+                }
+
+                loadingRef.current = true;
+
+                lastHistoryLoadRef.current =
+                    Date.now();
+
+                setIsSyncing(true);
                 setHistoryError('');
 
-                invoices.forEach((invoice) => {
-                    updateInHistory(invoice as Invoice);
-                });
-            } catch (error) {
-                console.error(
-                    'History sync failed:',
-                    error
-                );
+                try {
+                    const json =
+                        await fetchSheetHistory(
+                            buildHistoryUrl(
+                                loggedInRep.name
+                            )
+                        );
 
-                setHistoryError(
-                    'Could not load latest invoices. Showing saved local invoices.'
-                );
+                    if (
+                        !json?.success ||
+                        !Array.isArray(json.data)
+                    ) {
+                        throw new Error(
+                            json?.message ||
+                                'Invalid invoice history response'
+                        );
+                    }
 
-                setHasLoadedHistory(true);
-            } finally {
-                loadingRef.current = false;
-                setIsSyncing(false);
-            }
-        },
-        [
-            cancelledInvoiceKeys,
-            loggedInRep?.name,
-            updateInHistory,
-        ]
-    );
+                    const invoices =
+                        groupSheetRowsToInvoices(
+                            json.data as SheetRow[]
+                        )
+                            .filter(
+                                (invoice) => {
+                                    return (
+                                        normalizeOrderStatus(
+                                            invoice.orderStatus
+                                        ) !==
+                                            'Cancel' &&
+                                        !isCancelledByKey(
+                                            invoice,
+                                            cancelledInvoiceKeys
+                                        )
+                                    );
+                                }
+                            )
+                            .sort(
+                                (a, b) =>
+                                    getSortTimestamp(
+                                        b
+                                    ) -
+                                    getSortTimestamp(
+                                        a
+                                    )
+                            );
+
+                    setSheetInvoices(invoices);
+                    setHasLoadedHistory(true);
+                    setHistoryError('');
+
+                    invoices.forEach(
+                        (invoice) => {
+                            updateInHistory(
+                                invoice as Invoice
+                            );
+                        }
+                    );
+                } catch (error) {
+                    console.error(
+                        'History sync failed:',
+                        error
+                    );
+
+                    setHistoryError(
+                        'Could not load latest invoices. Showing saved local invoices.'
+                    );
+
+                    setHasLoadedHistory(true);
+                } finally {
+                    loadingRef.current = false;
+                    setIsSyncing(false);
+                }
+            },
+            [
+                cancelledInvoiceKeys,
+                loggedInRep?.name,
+                updateInHistory,
+            ]
+        );
 
     useEffect(() => {
         if (!loggedInRep?.name) {
@@ -282,24 +372,22 @@ export const HistoryPage: React.FC = () => {
             return;
         }
 
-        // History page open hote hi invoices load hongi.
         void loadHistoryFromSheet();
 
-        // Page open rehne par har 5 minute refresh hoga.
-        // Background tab mein request nahi jayegi.
-        const intervalId = window.setInterval(() => {
-            if (
-                document.visibilityState === 'visible'
-            ) {
-                void loadHistoryFromSheet();
-            }
-        }, HISTORY_REFRESH_MS);
+        const intervalId =
+            window.setInterval(() => {
+                if (
+                    document.visibilityState ===
+                    'visible'
+                ) {
+                    void loadHistoryFromSheet();
+                }
+            }, HISTORY_REFRESH_MS);
 
-        // User tab ya window par wapas aaye to latest data check hoga.
-        // 30-second throttle duplicate requests rokega.
         const handleFocus = () => {
             if (
-                document.visibilityState === 'visible'
+                document.visibilityState ===
+                'visible'
             ) {
                 void loadHistoryFromSheet();
             }
@@ -309,7 +397,11 @@ export const HistoryPage: React.FC = () => {
             'visibilitychange',
             handleFocus
         );
-        window.addEventListener('focus', handleFocus);
+
+        window.addEventListener(
+            'focus',
+            handleFocus
+        );
 
         return () => {
             window.clearInterval(intervalId);
@@ -324,9 +416,14 @@ export const HistoryPage: React.FC = () => {
                 handleFocus
             );
         };
-    }, [loadHistoryFromSheet, loggedInRep?.name]);
+    }, [
+        loadHistoryFromSheet,
+        loggedInRep?.name,
+    ]);
 
-    const handleEdit = (invoice: SheetInvoice) => {
+    const handleEdit = (
+        invoice: SheetInvoice
+    ) => {
         saveInvoice(invoice);
 
         navigate('/invoice/new', {
@@ -342,47 +439,71 @@ export const HistoryPage: React.FC = () => {
             return;
         }
 
-        const key = getInvoiceKey(cancelTarget);
+        const key =
+            getInvoiceKey(cancelTarget);
+
         const invoiceNumber = cleanText(
             cancelTarget.invoiceNumber
         );
-        const orderId = cleanText(cancelTarget.orderId);
 
-        [key, invoiceNumber, orderId].forEach(
-            (cancelKey) => {
-                if (cancelKey) {
-                    addCancelledInvoiceKey(cancelKey);
-                    deleteFromHistory(cancelKey);
-                }
-            }
+        const orderId = cleanText(
+            cancelTarget.orderId
         );
+
+        [
+            key,
+            invoiceNumber,
+            orderId,
+        ].forEach((cancelKey) => {
+            if (cancelKey) {
+                addCancelledInvoiceKey(
+                    cancelKey
+                );
+
+                deleteFromHistory(
+                    cancelKey
+                );
+            }
+        });
 
         setSheetInvoices((current) =>
             current.filter((invoice) => {
                 return (
-                    getInvoiceKey(invoice) !== key &&
-                    cleanText(invoice.invoiceNumber) !==
-                        invoiceNumber &&
-                    cleanText(invoice.orderId) !== orderId
+                    getInvoiceKey(invoice) !==
+                        key &&
+                    cleanText(
+                        invoice.invoiceNumber
+                    ) !== invoiceNumber &&
+                    cleanText(
+                        invoice.orderId
+                    ) !== orderId
                 );
             })
         );
 
         setCancelTarget(null);
-        push('Order cancelled successfully');
 
-        void cancelInvoiceInGoogleSheet(cancelTarget)
+        push(
+            'Order cancelled successfully'
+        );
+
+        void cancelInvoiceInGoogleSheet(
+            cancelTarget
+        )
             .then(() => {
-                // Cancel ke baad latest result turant verify hoga.
                 window.setTimeout(
                     () =>
-                        void loadHistoryFromSheet(true),
+                        void loadHistoryFromSheet(
+                            true
+                        ),
                     1200
                 );
 
                 window.setTimeout(
                     () =>
-                        void loadHistoryFromSheet(true),
+                        void loadHistoryFromSheet(
+                            true
+                        ),
                     3500
                 );
             })
@@ -406,7 +527,8 @@ export const HistoryPage: React.FC = () => {
         const updatedInvoice: SheetInvoice = {
             ...shipTarget,
             customerShipStatus: 'shipped',
-            updatedAt: new Date().toISOString(),
+            updatedAt:
+                new Date().toISOString(),
             revision: Date.now(),
         };
 
@@ -415,7 +537,8 @@ export const HistoryPage: React.FC = () => {
 
         setSheetInvoices((current) =>
             current.map((item) =>
-                getInvoiceKey(item) === updatedKey
+                getInvoiceKey(item) ===
+                updatedKey
                     ? {
                           ...item,
                           customerShipStatus:
@@ -429,24 +552,31 @@ export const HistoryPage: React.FC = () => {
             )
         );
 
-        updateInHistory(updatedInvoice as Invoice);
+        updateInHistory(
+            updatedInvoice as Invoice
+        );
+
         setShipTarget(null);
+
         push('Order marked as shipped');
 
         void updateCustomerShipInGoogleSheet(
             updatedInvoice
         )
             .then(() => {
-                // Shipping update ke baad immediate verification.
                 window.setTimeout(
                     () =>
-                        void loadHistoryFromSheet(true),
+                        void loadHistoryFromSheet(
+                            true
+                        ),
                     1200
                 );
 
                 window.setTimeout(
                     () =>
-                        void loadHistoryFromSheet(true),
+                        void loadHistoryFromSheet(
+                            true
+                        ),
                     3500
                 );
             })
@@ -462,7 +592,9 @@ export const HistoryPage: React.FC = () => {
             });
     };
 
-    const handleShare = (invoice: SheetInvoice) => {
+    const handleShare = (
+        invoice: SheetInvoice
+    ) => {
         setShareInvoice(invoice);
 
         setTimeout(async () => {
@@ -470,14 +602,16 @@ export const HistoryPage: React.FC = () => {
                 push(
                     'Could not prepare invoice for sharing'
                 );
+
                 setShareInvoice(null);
                 return;
             }
 
             try {
-                const blob = await generatePdf(
-                    pdfRef.current
-                );
+                const blob =
+                    await generatePdf(
+                        pdfRef.current
+                    );
 
                 const file = new File(
                     [blob],
@@ -501,18 +635,27 @@ export const HistoryPage: React.FC = () => {
                     });
                 } else {
                     const url =
-                        URL.createObjectURL(blob);
+                        URL.createObjectURL(
+                            blob
+                        );
 
-                    window.open(url, '_blank');
+                    window.open(
+                        url,
+                        '_blank'
+                    );
 
                     setTimeout(
                         () =>
-                            URL.revokeObjectURL(url),
+                            URL.revokeObjectURL(
+                                url
+                            ),
                         10000
                     );
 
                     const message =
-                        buildWhatsappMessage(invoice);
+                        buildWhatsappMessage(
+                            invoice
+                        );
 
                     window.open(
                         `https://wa.me/?text=${encodeURIComponent(
@@ -526,14 +669,18 @@ export const HistoryPage: React.FC = () => {
                     error
                 );
 
-                push('Failed to share invoice');
+                push(
+                    'Failed to share invoice'
+                );
             } finally {
                 setShareInvoice(null);
             }
         }, 300);
     };
 
-    const statusLabel = (s?: string) => {
+    const statusLabel = (
+        s?: string
+    ) => {
         if (s === 'paid') {
             return 'PAID';
         }
@@ -545,7 +692,9 @@ export const HistoryPage: React.FC = () => {
         return 'PENDING';
     };
 
-    const statusClass = (s?: string) => {
+    const statusClass = (
+        s?: string
+    ) => {
         if (s === 'paid') {
             return 'badge badge--paid';
         }
@@ -560,17 +709,21 @@ export const HistoryPage: React.FC = () => {
     const shipStatusStyle = (
         status?: string
     ): React.CSSProperties => {
-        const s = cleanText(status).toLowerCase();
+        const s =
+            cleanText(
+                status
+            ).toLowerCase();
 
-        const base: React.CSSProperties = {
-            fontSize: 12,
-            fontWeight: 600,
-            padding: '4px 10px',
-            borderRadius: 5,
-            color: '#fff',
-            minWidth: 90,
-            textAlign: 'center',
-        };
+        const base: React.CSSProperties =
+            {
+                fontSize: 12,
+                fontWeight: 600,
+                padding: '4px 10px',
+                borderRadius: 5,
+                color: '#fff',
+                minWidth: 90,
+                textAlign: 'center',
+            };
 
         if (s === 'ready to ship') {
             return {
@@ -637,7 +790,8 @@ export const HistoryPage: React.FC = () => {
         <div className="page history-page">
             <div className="history-header">
                 <h2 className="history-welcome">
-                    Welcome {loggedInRep?.name}
+                    Welcome{' '}
+                    {loggedInRep?.name}
                 </h2>
             </div>
 
@@ -664,175 +818,189 @@ export const HistoryPage: React.FC = () => {
             </div>
 
             <main className="history-list-container">
-                {repInvoices.length === 0 ? (
+                {repInvoices.length ===
+                0 ? (
                     <div className="history-empty">
-                        <p>{emptyMessage()}</p>
+                        <p>
+                            {emptyMessage()}
+                        </p>
 
                         {hasLoadedHistory &&
                             !historyError &&
                             !isSyncing && (
                                 <p>
                                     Tap{' '}
-                                    <strong>+</strong> to
-                                    create your first
-                                    invoice.
+                                    <strong>
+                                        +
+                                    </strong>{' '}
+                                    to create your
+                                    first invoice.
                                 </p>
                             )}
                     </div>
                 ) : (
                     <div className="history-scroll">
-                        {repInvoices.map((inv) => (
-                            <div
-                                key={
-                                    inv.orderId ||
-                                    inv.invoiceNumber
-                                }
-                                className="history-card"
-                            >
-                                <div className="history-card-top padd-14">
-                                    <span className="history-inv-num">
-                                        {
-                                            inv.invoiceNumber
-                                        }
-                                    </span>
-
-                                    <div
-                                        style={{
-                                            display: 'flex',
-                                            flexDirection:
-                                                'column',
-                                            alignItems:
-                                                'flex-end',
-                                            gap: 7,
-                                        }}
-                                    >
-                                        <span
-                                            className={statusClass(
-                                                inv.paymentStatus
-                                            )}
-                                        >
-                                            {statusLabel(
-                                                inv.paymentStatus
-                                            )}
+                        {repInvoices.map(
+                            (inv) => (
+                                <div
+                                    key={
+                                        inv.orderId ||
+                                        inv.invoiceNumber
+                                    }
+                                    className="history-card"
+                                >
+                                    <div className="history-card-top padd-14">
+                                        <span className="history-inv-num">
+                                            {
+                                                inv.invoiceNumber
+                                            }
                                         </span>
 
-                                        {cleanText(
-                                            inv.orderShipStatus
-                                        ) && (
+                                        <div
+                                            style={{
+                                                display:
+                                                    'flex',
+                                                flexDirection:
+                                                    'column',
+                                                alignItems:
+                                                    'flex-end',
+                                                gap: 7,
+                                            }}
+                                        >
                                             <span
-                                                style={shipStatusStyle(
-                                                    inv.orderShipStatus
+                                                className={statusClass(
+                                                    inv.paymentStatus
                                                 )}
                                             >
-                                                {
-                                                    inv.orderShipStatus
-                                                }
+                                                {statusLabel(
+                                                    inv.paymentStatus
+                                                )}
                                             </span>
-                                        )}
 
-                                        {inv.customerShipStatus ===
-                                            'shipped' && (
-                                            <span
-                                                style={customerShippedStyle()}
-                                            >
-                                                Shipped
-                                            </span>
-                                        )}
+                                            {cleanText(
+                                                inv.orderShipStatus
+                                            ) && (
+                                                <span
+                                                    style={shipStatusStyle(
+                                                        inv.orderShipStatus
+                                                    )}
+                                                >
+                                                    {
+                                                        inv.orderShipStatus
+                                                    }
+                                                </span>
+                                            )}
+
+                                            {inv.customerShipStatus ===
+                                                'shipped' && (
+                                                <span
+                                                    style={customerShippedStyle()}
+                                                >
+                                                    Shipped
+                                                </span>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <div className="history-customer padd-14">
+                                        Customer :{' '}
+                                        {
+                                            inv.customerName
+                                        }
+                                    </div>
+
+                                    <div className="history-amount padd-14">
+                                        {inv.total.toLocaleString()}
+                                    </div>
+
+                                    <div className="history-actions">
+                                        <button
+                                            className="h-action-btn"
+                                            onClick={() =>
+                                                handleEdit(
+                                                    inv
+                                                )
+                                            }
+                                        >
+                                            Edit
+
+                                            <img
+                                                src={
+                                                    editIcon
+                                                }
+                                                alt=""
+                                                style={{
+                                                    width: 20,
+                                                    height: 20,
+                                                }}
+                                            />
+                                        </button>
+
+                                        <button
+                                            className="h-action-btn h-action-btn--ship"
+                                            onClick={() =>
+                                                setShipTarget(
+                                                    inv
+                                                )
+                                            }
+                                            title={
+                                                inv.customerShipStatus ===
+                                                'shipped'
+                                                    ? 'Already shipped'
+                                                    : 'Mark customer ship as shipped'
+                                            }
+                                        >
+                                            Ship
+                                            <ShipIcon />
+                                        </button>
+
+                                        <button
+                                            className="h-action-btn h-action-btn--share"
+                                            onClick={() =>
+                                                handleShare(
+                                                    inv
+                                                )
+                                            }
+                                        >
+                                            Share
+
+                                            <img
+                                                src={
+                                                    whatsappIcon
+                                                }
+                                                alt=""
+                                                style={{
+                                                    width: 20,
+                                                    height: 20,
+                                                }}
+                                            />
+                                        </button>
+
+                                        <button
+                                            className="h-action-btn h-action-btn--del"
+                                            onClick={() =>
+                                                setCancelTarget(
+                                                    inv
+                                                )
+                                            }
+                                        >
+                                            Cancel
+
+                                            <img
+                                                src={
+                                                    deleteIcon
+                                                }
+                                                alt=""
+                                                style={{
+                                                    width: 20,
+                                                    height: 20,
+                                                }}
+                                            />
+                                        </button>
                                     </div>
                                 </div>
-
-                                <div className="history-customer padd-14">
-                                    Customer :{' '}
-                                    {inv.customerName}
-                                </div>
-
-                                <div className="history-amount padd-14">
-                                    {inv.total.toLocaleString()}
-                                </div>
-
-                                <div className="history-actions">
-                                    <button
-                                        className="h-action-btn"
-                                        onClick={() =>
-                                            handleEdit(
-                                                inv
-                                            )
-                                        }
-                                    >
-                                        Edit
-
-                                        <img
-                                            src={editIcon}
-                                            alt=""
-                                            style={{
-                                                width: 20,
-                                                height: 20,
-                                            }}
-                                        />
-                                    </button>
-
-                                    <button
-                                        className="h-action-btn h-action-btn--ship"
-                                        onClick={() =>
-                                            setShipTarget(
-                                                inv
-                                            )
-                                        }
-                                        title={
-                                            inv.customerShipStatus ===
-                                            'shipped'
-                                                ? 'Already shipped'
-                                                : 'Mark customer ship as shipped'
-                                        }
-                                    >
-                                        Ship
-                                        <ShipIcon />
-                                    </button>
-
-                                    <button
-                                        className="h-action-btn h-action-btn--share"
-                                        onClick={() =>
-                                            handleShare(
-                                                inv
-                                            )
-                                        }
-                                    >
-                                        Share
-
-                                        <img
-                                            src={
-                                                whatsappIcon
-                                            }
-                                            alt=""
-                                            style={{
-                                                width: 20,
-                                                height: 20,
-                                            }}
-                                        />
-                                    </button>
-
-                                    <button
-                                        className="h-action-btn h-action-btn--del"
-                                        onClick={() =>
-                                            setCancelTarget(
-                                                inv
-                                            )
-                                        }
-                                    >
-                                        Cancel
-
-                                        <img
-                                            src={deleteIcon}
-                                            alt=""
-                                            style={{
-                                                width: 20,
-                                                height: 20,
-                                            }}
-                                        />
-                                    </button>
-                                </div>
-                            </div>
-                        ))}
+                            )
+                        )}
                     </div>
                 )}
             </main>
@@ -841,7 +1009,9 @@ export const HistoryPage: React.FC = () => {
                 <button
                     className="fab-btn"
                     onClick={() =>
-                        navigate('/invoice/new')
+                        navigate(
+                            '/invoice/new'
+                        )
                     }
                     aria-label="Create new invoice"
                 >
@@ -861,13 +1031,16 @@ export const HistoryPage: React.FC = () => {
                         top: 0,
                         width: '100%',
                         opacity: 0,
-                        pointerEvents: 'none',
+                        pointerEvents:
+                            'none',
                         zIndex: -1,
                     }}
                     aria-hidden
                 >
                     <InvoicePrintView
-                        invoice={shareInvoice}
+                        invoice={
+                            shareInvoice
+                        }
                         ref={pdfRef}
                     />
                 </div>
@@ -878,7 +1051,9 @@ export const HistoryPage: React.FC = () => {
                 title="Cancel Order"
                 description="Are you sure you want to cancel this order? It will be removed from invoice history, but it will stay in Google Sheet as Cancel."
                 confirmLabel="Cancel Order"
-                onConfirm={confirmCancel}
+                onConfirm={
+                    confirmCancel
+                }
                 onClose={() =>
                     setCancelTarget(null)
                 }
@@ -889,7 +1064,9 @@ export const HistoryPage: React.FC = () => {
                 title="Ship Order"
                 description="Do you want to mark this order as shipped?"
                 confirmLabel="Shipped"
-                onConfirm={confirmCustomerShip}
+                onConfirm={
+                    confirmCustomerShip
+                }
                 onClose={() =>
                     setShipTarget(null)
                 }

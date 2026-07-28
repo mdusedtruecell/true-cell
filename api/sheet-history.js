@@ -4,7 +4,17 @@ const APPS_SCRIPT_URL =
 module.exports = async function handler(req, res) {
   res.setHeader(
     'Cache-Control',
-    'public, s-maxage=60, stale-while-revalidate=300'
+    'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0, s-maxage=0'
+  );
+
+  res.setHeader(
+    'Pragma',
+    'no-cache'
+  );
+
+  res.setHeader(
+    'Expires',
+    '0'
   );
 
   if (req.method !== 'GET') {
@@ -20,50 +30,88 @@ module.exports = async function handler(req, res) {
       'https://invoice.truecelldxb.com'
     );
 
-    const params = new URLSearchParams();
+    const params =
+      new URLSearchParams();
 
     const salesPerson =
-      requestUrl.searchParams.get('salesPerson') || '';
+      requestUrl.searchParams.get(
+        'salesPerson'
+      ) || '';
 
     const orderId =
-      requestUrl.searchParams.get('orderId') || '';
+      requestUrl.searchParams.get(
+        'orderId'
+      ) || '';
 
     const invoiceNo =
-      requestUrl.searchParams.get('invoiceNo') ||
-      requestUrl.searchParams.get('invoiceNumber') ||
+      requestUrl.searchParams.get(
+        'invoiceNo'
+      ) ||
+      requestUrl.searchParams.get(
+        'invoiceNumber'
+      ) ||
       '';
 
     const includeCanceled =
-      requestUrl.searchParams.get('includeCanceled') || '';
+      requestUrl.searchParams.get(
+        'includeCanceled'
+      ) || '';
 
     if (salesPerson) {
-      params.set('salesPerson', salesPerson);
+      params.set(
+        'salesPerson',
+        salesPerson
+      );
     }
 
     if (orderId) {
-      params.set('orderId', orderId);
+      params.set(
+        'orderId',
+        orderId
+      );
     }
 
     if (invoiceNo) {
-      params.set('invoiceNo', invoiceNo);
+      params.set(
+        'invoiceNo',
+        invoiceNo
+      );
     }
 
     if (includeCanceled) {
-      params.set('includeCanceled', includeCanceled);
+      params.set(
+        'includeCanceled',
+        includeCanceled
+      );
     }
+
+    params.set(
+      '_',
+      String(Date.now())
+    );
 
     const url =
       `${APPS_SCRIPT_URL}?${params.toString()}`;
 
-    const response = await fetch(url, {
-      method: 'GET',
-      redirect: 'follow',
-      headers: {
-        Accept: 'application/json,text/plain,*/*',
-      },
-    });
+    const response = await fetch(
+      url,
+      {
+        method: 'GET',
+        redirect: 'follow',
+        cache: 'no-store',
+        headers: {
+          Accept:
+            'application/json,text/plain,*/*',
+          'Cache-Control':
+            'no-cache',
+          Pragma:
+            'no-cache',
+        },
+      }
+    );
 
-    const text = await response.text();
+    const text =
+      await response.text();
 
     let json;
 
@@ -72,12 +120,15 @@ module.exports = async function handler(req, res) {
     } catch (error) {
       return res.status(502).json({
         success: false,
-        message: 'Invalid Google Sheet response',
-        preview: String(text || '').slice(0, 300),
+        message:
+          'Invalid Google Sheet response',
       });
     }
 
-    if (!response.ok || json.success === false) {
+    if (
+      !response.ok ||
+      json.success === false
+    ) {
       return res.status(502).json({
         success: false,
         message:
@@ -86,12 +137,15 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    return res.status(200).json(json);
+    return res
+      .status(200)
+      .json(json);
   } catch (error) {
     return res.status(500).json({
       success: false,
       message:
-        error && error.message
+        error &&
+        error.message
           ? error.message
           : 'Could not load invoice history',
     });

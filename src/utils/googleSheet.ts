@@ -362,10 +362,7 @@ export const mergeInvoices = (
     localInvoices: SheetInvoice[],
     sheetInvoices: SheetInvoice[]
 ): SheetInvoice[] => {
-    const merged = new Map<
-        string,
-        SheetInvoice
-    >();
+    const merged = new Map<string, SheetInvoice>();
 
     localInvoices.forEach((invoice) => {
         const key = getInvoiceKey(invoice);
@@ -434,10 +431,7 @@ export const mergeInvoices = (
 export const groupSheetRowsToInvoices = (
     rows: SheetRow[]
 ): SheetInvoice[] => {
-    const grouped = new Map<
-        string,
-        SheetInvoice
-    >();
+    const grouped = new Map<string, SheetInvoice>();
 
     const itemSeenByInvoice = new Map<
         string,
