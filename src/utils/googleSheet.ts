@@ -6,7 +6,6 @@ export type SheetInvoice = Invoice & {
     orderStatus?: string;
     orderShipStatus?: string;
     customerShipStatus?: 'pending' | 'shipped';
-    salesOrder?: string;
     updatedAt?: string;
     revision?: string | number;
 };
@@ -29,7 +28,6 @@ export type SheetRow = {
     customerShipStatus?: string;
     customerShip?: string;
     shippingStatus?: string;
-    salesOrder?: string;
     updatedAt?: string;
     revision?: string | number;
 };
@@ -413,10 +411,6 @@ export const mergeInvoices = (
                 ) ||
                 localInvoice?.orderShipStatus ||
                 '',
-
-            salesOrder:
-                cleanText(latest?.salesOrder) ||
-                cleanText(older?.salesOrder),
         } as SheetInvoice);
     });
 
@@ -500,10 +494,6 @@ export const groupSheetRowsToInvoices = (
                     row.orderShipDcc
             );
 
-        const salesOrder = cleanText(
-            row.salesOrder
-        );
-
         const updatedAt =
             cleanText(row.updatedAt) ||
             parseSheetDate(row.date);
@@ -561,10 +551,6 @@ export const groupSheetRowsToInvoices = (
                     'shipped';
             }
 
-            if (salesOrder) {
-                existing.salesOrder = salesOrder;
-            }
-
             if (
                 Number(revision) >
                 Number(
@@ -612,7 +598,6 @@ export const groupSheetRowsToInvoices = (
             orderStatus,
             orderShipStatus,
             customerShipStatus,
-            salesOrder,
             updatedAt,
             revision,
         });
@@ -1050,9 +1035,6 @@ export const syncInvoiceToGoogleSheet =
                     ? 'shipped'
                     : 'pending',
 
-            salesOrder:
-                invoice.salesOrder,
-
             items: normalizeInvoiceItems(
                 invoice
             ).map((item) => ({
@@ -1143,7 +1125,5 @@ export const updateCustomerShipInGoogleSheet =
             invoiceNumber,
             customerShipStatus:
                 'Shipped',
-            salesOrder:
-                invoice.salesOrder,
         });
     };

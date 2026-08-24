@@ -138,9 +138,6 @@ export const HistoryPage: React.FC = () => {
     const [shipTarget, setShipTarget] =
         useState<SheetInvoice | null>(null);
 
-    const [shipSalesOrder, setShipSalesOrder] =
-        useState('');
-
     const [shareInvoice, setShareInvoice] =
         useState<SheetInvoice | null>(null);
 
@@ -507,21 +504,9 @@ export const HistoryPage: React.FC = () => {
             return;
         }
 
-        const salesOrder = cleanText(
-            shipSalesOrder
-        );
-
-        if (!salesOrder) {
-            push(
-                'Sales Order number is required'
-            );
-            return;
-        }
-
         const updatedInvoice: SheetInvoice = {
             ...shipTarget,
             customerShipStatus: 'shipped',
-            salesOrder,
             updatedAt: new Date().toISOString(),
             revision: Date.now(),
         };
@@ -536,7 +521,6 @@ export const HistoryPage: React.FC = () => {
                           ...item,
                           customerShipStatus:
                               'shipped' as const,
-                          salesOrder,
                           updatedAt:
                               updatedInvoice.updatedAt,
                           revision:
@@ -549,7 +533,6 @@ export const HistoryPage: React.FC = () => {
         updateInHistory(updatedInvoice as Invoice);
 
         setShipTarget(null);
-        setShipSalesOrder('');
         push('Order marked as shipped');
 
         /*
@@ -846,30 +829,11 @@ export const HistoryPage: React.FC = () => {
 
                                             {invoice.customerShipStatus ===
                                                 'shipped' && (
-                                                <>
-                                                    <span
-                                                        style={customerShippedStyle()}
-                                                    >
-                                                        Shipped
-                                                    </span>
-
-                                                    {cleanText(
-                                                        invoice.salesOrder
-                                                    ) && (
-                                                        <span
-                                                            style={{
-                                                                fontSize: 11,
-                                                                fontWeight: 700,
-                                                                color: '#5d0b35',
-                                                            }}
-                                                        >
-                                                            Sales Order:{' '}
-                                                            {
-                                                                invoice.salesOrder
-                                                            }
-                                                        </span>
-                                                    )}
-                                                </>
+                                                <span
+                                                    style={customerShippedStyle()}
+                                                >
+                                                    Shipped
+                                                </span>
                                             )}
                                         </div>
                                     </div>
@@ -910,16 +874,11 @@ export const HistoryPage: React.FC = () => {
 
                                         <button
                                             className="h-action-btn h-action-btn--ship"
-                                            onClick={() => {
-                                                setShipSalesOrder(
-                                                    cleanText(
-                                                        invoice.salesOrder
-                                                    )
-                                                );
+                                            onClick={() =>
                                                 setShipTarget(
                                                     invoice
-                                                );
-                                            }}
+                                                )
+                                            }
                                             title={
                                                 invoice.customerShipStatus ===
                                                 'shipped'
@@ -1029,86 +988,16 @@ export const HistoryPage: React.FC = () => {
                 }
             />
 
-            {!!shipTarget && (
-                <div
-                    className="confirm-backdrop"
-                    onClick={() => {
-                        setShipTarget(null);
-                        setShipSalesOrder('');
-                    }}
-                >
-                    <div
-                        className="confirm-dialog"
-                        onClick={(e) =>
-                            e.stopPropagation()
-                        }
-                    >
-                        <h4>Ship Order</h4>
-                        <p>
-                            Do you want to mark this order as shipped?
-                        </p>
-
-                        <input
-                            type="text"
-                            value={shipSalesOrder}
-                            onChange={(e) =>
-                                setShipSalesOrder(
-                                    e.target.value
-                                )
-                            }
-                            placeholder="Sales Order Number"
-                            autoFocus
-                            style={{
-                                width: '100%',
-                                boxSizing: 'border-box',
-                                padding: '11px 12px',
-                                marginBottom: 16,
-                                borderRadius: 10,
-                                border: '1px solid var(--border)',
-                                fontSize: 13,
-                                fontFamily: 'inherit',
-                                outline: 'none',
-                            }}
-                        />
-
-                        <div className="dialog-actions">
-                            <button
-                                type="button"
-                                className="btn-cancel"
-                                onClick={() => {
-                                    setShipTarget(null);
-                                    setShipSalesOrder('');
-                                }}
-                            >
-                                Cancel
-                            </button>
-
-                            <button
-                                type="button"
-                                className="btn-confirm"
-                                onClick={confirmCustomerShip}
-                                disabled={
-                                    !cleanText(
-                                        shipSalesOrder
-                                    )
-                                }
-                                style={
-                                    !cleanText(
-                                        shipSalesOrder
-                                    )
-                                        ? {
-                                              opacity: 0.5,
-                                              cursor: 'not-allowed',
-                                          }
-                                        : undefined
-                                }
-                            >
-                                Shipped
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <ConfirmDialog
+                open={!!shipTarget}
+                title="Ship Order"
+                description="Do you want to mark this order as shipped?"
+                confirmLabel="Shipped"
+                onConfirm={confirmCustomerShip}
+                onClose={() =>
+                    setShipTarget(null)
+                }
+            />
         </div>
     );
 };
