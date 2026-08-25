@@ -6,9 +6,9 @@ export interface SalesRep {
 }
 
 export const SALES_REPS: SalesRep[] = [
-    { id: 3, name: 'Atif Pardesi', code: 'TC1024' },
+    { id: 3, name: 'Atif Pardesi', code: 'TC1024', canAccessAllInvoices: true },
     { id: 1, name: 'Shahid Khalid', code: 'TC1058' },
-    { id: 2, name: 'M Usaid', code: 'TC1133' },
+    { id: 2, name: 'M Usaid', code: 'TC1133', canAccessAllInvoices: true },
     { id: 3, name: 'Shazen Khan', code: 'TC1187' },
     { id: 3, name: 'Faisal Ahmed', code: 'TC1245' },
     { id: 3, name: 'Talha Amdani', code: 'TC1310' },
