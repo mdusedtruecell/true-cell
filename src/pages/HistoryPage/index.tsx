@@ -73,6 +73,23 @@ const ShipIcon = () => (
     </svg>
 );
 
+const DashboardBackIcon = () => (
+    <svg
+        width="20"
+        height="20"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+    >
+        <path d="M19 12H5" />
+        <path d="m12 19-7-7 7-7" />
+    </svg>
+);
+
 const isCancelledByKey = (
     invoice: SheetInvoice,
     cancelledKeys: string[]
@@ -97,6 +114,10 @@ export const HistoryPage: React.FC = () => {
     const loggedInRep = useInvoiceStore(
         (s: any) => s.loggedInRep
     );
+
+    const canReturnToAccountsDashboard =
+        loggedInRep?.canAccessAllInvoices === true ||
+        cleanText(loggedInRep?.name).toLowerCase() === 'accounts';
 
     const invoiceHistory: SheetInvoice[] = useInvoiceStore(
         (s: any) => s.invoiceHistory
@@ -730,14 +751,85 @@ export const HistoryPage: React.FC = () => {
 
     return (
         <div className="page history-page">
-            <div className="history-header">
-                <h2 className="history-welcome">
+            <div
+                className="history-header"
+                style={{
+                    position: 'relative',
+                    minHeight: 92,
+                    padding: 0,
+                    background: 'linear-gradient(135deg, #79003f, #b30b63)',
+                    borderBottomLeftRadius: 22,
+                    borderBottomRightRadius: 22,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    boxShadow: '0 7px 20px rgba(121,0,63,0.12)',
+                    zIndex: 2,
+                }}
+            >
+                {canReturnToAccountsDashboard && (
+                    <button
+                        type="button"
+                        onClick={() => navigate('/management')}
+                        aria-label="Back to Accounts Dashboard"
+                        style={{
+                            position: 'absolute',
+                            left: 18,
+                            top: '50%',
+                            transform: 'translateY(-50%)',
+                            width: 42,
+                            height: 42,
+                            borderRadius: 12,
+                            border: '1px solid rgba(255,255,255,0.35)',
+                            background: 'rgba(255,255,255,0.10)',
+                            color: '#fff',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            padding: 0,
+                            cursor: 'pointer',
+                            zIndex: 3,
+                        }}
+                    >
+                        <DashboardBackIcon />
+                    </button>
+                )}
+
+                <h2
+                    className="history-welcome"
+                    style={{
+                        margin: 0,
+                        padding: '0 72px',
+                        width: '100%',
+                        textAlign: 'center',
+                        fontSize: 20,
+                        fontWeight: 700,
+                        lineHeight: 1.2,
+                    }}
+                >
                     Welcome {loggedInRep?.name}
                 </h2>
             </div>
 
-            <div className="history-stats p-40-20">
-                <div className="stat-block">
+            <div
+                className="history-stats p-40-20"
+                style={{
+                    gap: 10,
+                    padding: '18px 20px 16px',
+                }}
+            >
+                <div
+                    className="stat-block"
+                    style={{
+                        minHeight: 76,
+                        padding: '12px 15px',
+                        borderRadius: 16,
+                        boxShadow: '0 5px 16px rgba(0,0,0,0.05)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        justifyContent: 'center',
+                    }}
+                >
                     <div className="stat-label">
                         Total Invoices
                     </div>
@@ -747,7 +839,19 @@ export const HistoryPage: React.FC = () => {
                     </div>
                 </div>
 
-                <div className="stat-block stat-block--accent">
+                <div
+                    className="stat-block stat-block--accent"
+                    style={{
+                        minHeight: 76,
+                        padding: '12px 15px',
+                        borderRadius: 16,
+                        background: '#7a1248',
+                        boxShadow: '0 5px 16px rgba(121,0,63,0.12)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        justifyContent: 'center',
+                    }}
+                >
                     <div className="stat-label">
                         Total Amount
                     </div>

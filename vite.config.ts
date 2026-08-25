@@ -18,6 +18,21 @@ export default defineConfig({
       utils: path.resolve(__dirname, 'src/utils'),
     },
   },
+  server: {
+    proxy: {
+      '/api/sheet-history': {
+        target: 'https://script.google.com',
+        changeOrigin: true,
+        secure: true,
+        followRedirects: true,
+        rewrite: (requestPath) =>
+          requestPath.replace(
+            /^\/api\/sheet-history/,
+            '/macros/s/AKfycbw89yajiSI_8Y_jBBWS_GeUSUHKuf_bO7O6Tk4KbrRfn8KwzJ9g_QPR0WUeY536qohLxg/exec'
+          ),
+      },
+    },
+  },
   test: {
     globals: true,
     environment: 'jsdom',

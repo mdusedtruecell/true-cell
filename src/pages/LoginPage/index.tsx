@@ -27,7 +27,14 @@ export const LoginPage: React.FC = () => {
             return;
         }
         setLoggedInRep(rep);
-        navigate('/history', { replace: true });
+        const hasAllInvoiceAccess =
+            rep.canAccessAllInvoices === true ||
+            rep.name.toLowerCase().trim() === 'accounts';
+
+        navigate(
+            hasAllInvoiceAccess ? '/management' : '/history',
+            { replace: true }
+        );
     };
 
     return (
