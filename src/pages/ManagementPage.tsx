@@ -802,12 +802,19 @@ export const ManagementPage: React.FC = () => {
                 selectedSalesPerson
             ).toLowerCase();
 
-        return allInvoices.filter(
-            (invoice) =>
+        return allInvoices.filter((invoice) => {
+            const sameSalesPerson =
                 cleanText(
                     invoice.salesRepresentative
-                ).toLowerCase() === target
-        );
+                ).toLowerCase() === target;
+
+            const isShipped =
+                cleanText(
+                    invoice.customerShipStatus
+                ).toLowerCase() === 'shipped';
+
+            return sameSalesPerson && isShipped;
+        });
     }, [allInvoices, selectedSalesPerson]);
 
     const filteredInvoices = useMemo(() => {
