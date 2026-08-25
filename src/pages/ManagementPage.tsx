@@ -645,6 +645,7 @@ export const ManagementPage: React.FC = () => {
                 try {
                     rows = await fetchRowsDirectFromAppsScript({
                         salesPerson: selectedSalesPerson,
+                        includeCanceled: 'true',
                     });
                 } catch (directError) {
                     if (!allowVercelFallback) {
@@ -653,7 +654,10 @@ export const ManagementPage: React.FC = () => {
 
                     const response = await fetchSheetHistory(
                         buildHistoryUrl(
-                            selectedSalesPerson
+                            selectedSalesPerson,
+                            {
+                                includeCanceled: 'true',
+                            }
                         )
                     );
 
