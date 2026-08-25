@@ -111,6 +111,7 @@ const buildManagedInvoices = (
     rows: ManagedSheetRow[]
 ): ManagedInvoice[] => {
     const invoicedNumberByInvoice = new Map<string, string>();
+    const orderStatusByInvoice = new Map<string, string>();
 
     rows.forEach((row) => {
         const key = cleanText(row.orderId || row.invoiceNo);
@@ -120,18 +121,45 @@ const buildManagedInvoices = (
         if (invoicedNumber) {
             invoicedNumberByInvoice.set(key, invoicedNumber);
         }
+
+        const orderStatus = cleanText(row.orderStatus);
+        if (orderStatus) {
+            orderStatusByInvoice.set(key, orderStatus);
+        }
     });
 
-    return groupSheetRowsToInvoices(rows)
+    /*
+     * IMPORTANT:
+     * The shared groupSheetRowsToInvoices() helper intentionally removes
+     * Order Status = Cancel for normal salesperson history.
+     *
+     * Admin/Accounts history must show EVERY invoice physically present
+     * in Google Sheet, so only for this page we temporarily neutralize
+     * orderStatus while grouping, then restore the real status afterwards.
+     *
+     * This keeps normal salesperson behavior completely unchanged.
+     */
+    const rowsForAdminGrouping = rows.map((row) => ({
+        ...row,
+        orderStatus: 'Confirm',
+    }));
+
+    return groupSheetRowsToInvoices(rowsForAdminGrouping)
         .map((invoice) => {
             const key = cleanText(
                 invoice.orderId || invoice.invoiceNumber
             );
+
             const invoicedNumber =
                 invoicedNumberByInvoice.get(key) || '';
 
+            const realOrderStatus =
+                orderStatusByInvoice.get(key) ||
+                invoice.orderStatus;
+
             return {
                 ...invoice,
+                orderStatus: realOrderStatus,
                 invoicedNumber,
                 invoiceState: normalizeInvoicedState(invoicedNumber),
             } as ManagedInvoice;
