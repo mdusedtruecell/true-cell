@@ -12,6 +12,7 @@ import InvoicePrintView from 'components/InvoicePrintView/InvoicePrintView';
 import { generatePdf, getPdfFilename } from 'utils/pdf';
 import { buildWhatsappMessage } from 'utils/whatsapp';
 import { useToast } from 'components/Toast/Toast';
+import Header from 'components/Header/Header';
 import type { Invoice } from 'types/invoice';
 import {
     type SheetInvoice,
@@ -31,6 +32,7 @@ import whatsappIcon from '../../assets/whatsapp.png';
 import deleteIcon from '../../assets/delete.png';
 import plusIcon from '../../assets/plus_icon.png';
 import editIcon from '../../assets/edit_i.png';
+import backbtn from '../../assets/back.png';
 
 const HISTORY_REFRESH_MS = 5 * 60 * 1000;
 const HISTORY_MIN_REFRESH_GAP_MS = 30 * 1000;
@@ -73,23 +75,6 @@ const ShipIcon = () => (
     </svg>
 );
 
-const DashboardBackIcon = () => (
-    <svg
-        width="20"
-        height="20"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2.2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-    >
-        <path d="M19 12H5" />
-        <path d="m12 19-7-7 7-7" />
-    </svg>
-);
-
 const isCancelledByKey = (
     invoice: SheetInvoice,
     cancelledKeys: string[]
@@ -105,6 +90,26 @@ const isCancelledByKey = (
             cancelledKey === orderId
         );
     });
+};
+
+
+/*
+ * Keep invoice cards in creation order.
+ * Later Ship / DCC / payment / status updates may change revision/updatedAt,
+ * but must never move an existing invoice up or down.
+ */
+const getInvoiceCreatedTimestamp = (
+    invoice: SheetInvoice
+): number => {
+    const created = Date.parse(
+        cleanText(invoice.invoiceDate)
+    );
+
+    if (Number.isFinite(created)) {
+        return created;
+    }
+
+    return getSortTimestamp(invoice);
 };
 
 export const HistoryPage: React.FC = () => {
@@ -191,8 +196,8 @@ export const HistoryPage: React.FC = () => {
             })
             .sort(
                 (a, b) =>
-                    getSortTimestamp(b) -
-                    getSortTimestamp(a)
+                    getInvoiceCreatedTimestamp(b) -
+                    getInvoiceCreatedTimestamp(a)
             );
     }, [
         cancelledInvoiceKeys,
@@ -217,8 +222,8 @@ export const HistoryPage: React.FC = () => {
             })
             .sort(
                 (a, b) =>
-                    getSortTimestamp(b) -
-                    getSortTimestamp(a)
+                    getInvoiceCreatedTimestamp(b) -
+                    getInvoiceCreatedTimestamp(a)
             );
     }, [cancelledInvoiceKeys, sheetInvoices]);
 
@@ -240,8 +245,8 @@ export const HistoryPage: React.FC = () => {
             )
             .sort(
                 (a, b) =>
-                    getSortTimestamp(b) -
-                    getSortTimestamp(a)
+                    getInvoiceCreatedTimestamp(b) -
+                    getInvoiceCreatedTimestamp(a)
             );
     }, [
         cancelledInvoiceKeys,
@@ -313,8 +318,8 @@ export const HistoryPage: React.FC = () => {
                         })
                         .sort(
                             (a, b) =>
-                                getSortTimestamp(b) -
-                                getSortTimestamp(a)
+                                getInvoiceCreatedTimestamp(b) -
+                                getInvoiceCreatedTimestamp(a)
                         );
 
                 /*
@@ -751,85 +756,26 @@ export const HistoryPage: React.FC = () => {
 
     return (
         <div className="page history-page">
-            <div
-                className="history-header"
-                style={{
-                    position: 'relative',
-                    minHeight: 92,
-                    padding: 0,
-                    background: 'linear-gradient(135deg, #79003f, #b30b63)',
-                    borderBottomLeftRadius: 22,
-                    borderBottomRightRadius: 22,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    boxShadow: '0 7px 20px rgba(121,0,63,0.12)',
-                    zIndex: 2,
-                }}
-            >
-                {canReturnToAccountsDashboard && (
-                    <button
-                        type="button"
-                        onClick={() => navigate('/management')}
-                        aria-label="Back to Accounts Dashboard"
-                        style={{
-                            position: 'absolute',
-                            left: 18,
-                            top: '50%',
-                            transform: 'translateY(-50%)',
-                            width: 42,
-                            height: 42,
-                            borderRadius: 12,
-                            border: '1px solid rgba(255,255,255,0.35)',
-                            background: 'rgba(255,255,255,0.10)',
-                            color: '#fff',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            padding: 0,
-                            cursor: 'pointer',
-                            zIndex: 3,
-                        }}
-                    >
-                        <DashboardBackIcon />
-                    </button>
-                )}
+            <Header
+                title={`Welcome ${loggedInRep?.name || ''}`}
+                left={
+                    canReturnToAccountsDashboard ? (
+                        <button
+                            type="button"
+                            onClick={() => navigate('/management')}
+                            aria-label="Back to Accounts Dashboard"
+                        >
+                            <img
+                                src={backbtn}
+                                alt="Back"
+                            />
+                        </button>
+                    ) : undefined
+                }
+            />
 
-                <h2
-                    className="history-welcome"
-                    style={{
-                        margin: 0,
-                        padding: '0 72px',
-                        width: '100%',
-                        textAlign: 'center',
-                        fontSize: 20,
-                        fontWeight: 700,
-                        lineHeight: 1.2,
-                    }}
-                >
-                    Welcome {loggedInRep?.name}
-                </h2>
-            </div>
-
-            <div
-                className="history-stats p-40-20"
-                style={{
-                    gap: 10,
-                    padding: '18px 20px 16px',
-                }}
-            >
-                <div
-                    className="stat-block"
-                    style={{
-                        minHeight: 76,
-                        padding: '12px 15px',
-                        borderRadius: 16,
-                        boxShadow: '0 5px 16px rgba(0,0,0,0.05)',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        justifyContent: 'center',
-                    }}
-                >
+            <div className="history-stats p-40-20">
+                <div className="stat-block">
                     <div className="stat-label">
                         Total Invoices
                     </div>
@@ -839,19 +785,7 @@ export const HistoryPage: React.FC = () => {
                     </div>
                 </div>
 
-                <div
-                    className="stat-block stat-block--accent"
-                    style={{
-                        minHeight: 76,
-                        padding: '12px 15px',
-                        borderRadius: 16,
-                        background: '#7a1248',
-                        boxShadow: '0 5px 16px rgba(121,0,63,0.12)',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        justifyContent: 'center',
-                    }}
-                >
+                <div className="stat-block stat-block--accent">
                     <div className="stat-label">
                         Total Amount
                     </div>
