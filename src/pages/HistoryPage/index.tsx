@@ -20,8 +20,8 @@ import {
     buildHistoryUrl,
     cancelInvoiceInGoogleSheet,
     cleanText,
-    fetchInvoiceFromSheet,
     fetchSheetHistory,
+    GOOGLE_SHEET_WEB_APP_URL,
     getInvoiceKey,
     getSortTimestamp,
     groupSheetRowsToInvoices,
@@ -35,8 +35,75 @@ import plusIcon from '../../assets/plus_icon.png';
 import editIcon from '../../assets/edit_i.png';
 import backbtn from '../../assets/back.png';
 
-const HISTORY_REFRESH_MS = 5 * 60 * 1000;
-const HISTORY_MIN_REFRESH_GAP_MS = 30 * 1000;
+const HISTORY_REFRESH_MS = 5000;
+const HISTORY_MIN_REFRESH_GAP_MS = 3500;
+
+const fetchSalesHistoryDirect = (
+    salesPerson: string
+): Promise<{ success?: boolean; message?: string; data?: SheetRow[] }> => {
+    return new Promise((resolve, reject) => {
+        const callbackName =
+            `__truecellFastHistory_${Date.now()}_${Math.random()
+                .toString(36)
+                .slice(2)}`;
+
+        const params = new URLSearchParams();
+        params.set('salesPerson', salesPerson);
+        params.set('callback', callbackName);
+        params.set('_', String(Date.now()));
+
+        const script = document.createElement('script');
+        let done = false;
+
+        const cleanup = () => {
+            if (done) return;
+            done = true;
+            window.clearTimeout(timeoutId);
+
+            try {
+                delete (window as any)[callbackName];
+            } catch {
+                (window as any)[callbackName] = undefined;
+            }
+
+            if (script.parentNode) {
+                script.parentNode.removeChild(script);
+            }
+        };
+
+        const timeoutId = window.setTimeout(() => {
+            cleanup();
+            reject(new Error('Google Sheet sync timed out'));
+        }, 10000);
+
+        (window as any)[callbackName] = (json: any) => {
+            cleanup();
+
+            if (!json?.success || !Array.isArray(json.data)) {
+                reject(
+                    new Error(
+                        json?.message ||
+                            'Invalid Google Sheet response'
+                    )
+                );
+                return;
+            }
+
+            resolve(json);
+        };
+
+        script.onerror = () => {
+            cleanup();
+            reject(new Error('Could not connect to Google Sheet'));
+        };
+
+        script.async = true;
+        script.src =
+            `${GOOGLE_SHEET_WEB_APP_URL}?${params.toString()}`;
+
+        document.body.appendChild(script);
+    });
+};
 
 const ShipIcon = () => (
     <svg
@@ -262,7 +329,10 @@ export const HistoryPage: React.FC = () => {
     );
 
     const loadHistoryFromSheet = useCallback(
-        async (force = false) => {
+        async (
+            force = false,
+            directOnly = false
+        ) => {
             if (!loggedInRep?.name) {
                 setHasLoadedHistory(true);
                 setIsSyncing(false);
@@ -288,9 +358,33 @@ export const HistoryPage: React.FC = () => {
             setHistoryError('');
 
             try {
-                const json = await fetchSheetHistory(
-                    buildHistoryUrl(loggedInRep.name)
-                );
+                let json: {
+                    success?: boolean;
+                    message?: string;
+                    data?: SheetRow[];
+                };
+
+                try {
+                    /*
+                     * Fast path: direct Apps Script read.
+                     * Background 5-second refreshes never touch Vercel.
+                     */
+                    json = await fetchSalesHistoryDirect(
+                        loggedInRep.name
+                    );
+                } catch (directError) {
+                    if (directOnly) {
+                        throw directError;
+                    }
+
+                    /*
+                     * One normal proxy fallback is allowed for opening/manual
+                     * refresh reliability, but NOT for the 5-second timer.
+                     */
+                    json = await fetchSheetHistory(
+                        buildHistoryUrl(loggedInRep.name)
+                    );
+                }
 
                 if (
                     !json?.success ||
@@ -480,13 +574,15 @@ export const HistoryPage: React.FC = () => {
             return;
         }
 
-        void loadHistoryFromSheet();
+        // Cache is already visible; quietly get a fresh Sheet snapshot now.
+        void loadHistoryFromSheet(true, false);
 
         const intervalId = window.setInterval(() => {
             if (
                 document.visibilityState === 'visible'
             ) {
-                void loadHistoryFromSheet();
+                // Fast direct Apps Script sync. No Vercel request here.
+                void loadHistoryFromSheet(true, true);
             }
         }, HISTORY_REFRESH_MS);
 
@@ -494,7 +590,8 @@ export const HistoryPage: React.FC = () => {
             if (
                 document.visibilityState === 'visible'
             ) {
-                void loadHistoryFromSheet();
+                // Coming back to the tab should refresh immediately.
+                void loadHistoryFromSheet(true, true);
             }
         };
 
@@ -601,7 +698,7 @@ export const HistoryPage: React.FC = () => {
             });
     };
 
-    const handleShipClick = async (
+    const handleShipClick = (
         invoice: SheetInvoice
     ) => {
         if (
@@ -613,56 +710,22 @@ export const HistoryPage: React.FC = () => {
         }
 
         /*
-         * Do not trust only browser/local status here.
-         * Ship must be allowed ONLY when Google Sheet itself says
-         * Order Ship DCC = DCC Dispatch.
-         *
-         * This is one targeted request only when the user presses Ship.
+         * NO network request on Ship click.
+         * The 5-second background Sheet sync keeps this value fresh.
+         * Result: message/popup appears instantly.
          */
-        try {
-            const freshInvoice =
-                await fetchInvoiceFromSheet(invoice);
+        const dccStatus = cleanText(
+            invoice.orderShipStatus
+        ).toLowerCase();
 
-            if (!freshInvoice) {
-                push(
-                    'Could not verify this order in Google Sheet. Please try again.'
-                );
-                return;
-            }
-
-            const dccStatus = cleanText(
-                freshInvoice.orderShipStatus
-            ).toLowerCase();
-
-            if (dccStatus !== 'dcc dispatch') {
-                push(
-                    'Cannot ship yet. DCC Dispatch is not completed for this order.'
-                );
-                return;
-            }
-
-            /*
-             * Use the fresh Sheet copy for the confirmation,
-             * while retaining local fields that Sheet may not carry.
-             */
-            setShipTarget({
-                ...invoice,
-                ...freshInvoice,
-                orderShipStatus:
-                    freshInvoice.orderShipStatus,
-                customerShipStatus:
-                    freshInvoice.customerShipStatus,
-            });
-        } catch (error) {
-            console.error(
-                'DCC Dispatch verification failed:',
-                error
-            );
-
+        if (dccStatus !== 'dcc dispatch') {
             push(
-                'Could not verify DCC Dispatch from Google Sheet. Please try again.'
+                'Cannot ship yet. DCC Dispatch is not completed for this order.'
             );
+            return;
         }
+
+        setShipTarget(invoice);
     };
 
     const confirmCustomerShip = () => {
@@ -1079,7 +1142,7 @@ export const HistoryPage: React.FC = () => {
                                         <button
                                             className="h-action-btn h-action-btn--ship"
                                             onClick={() =>
-                                                void handleShipClick(
+                                                handleShipClick(
                                                     invoice
                                                 )
                                             }
