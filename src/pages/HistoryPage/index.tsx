@@ -20,6 +20,7 @@ import {
     buildHistoryUrl,
     cancelInvoiceInGoogleSheet,
     cleanText,
+    fetchInvoiceFromSheet,
     fetchSheetHistory,
     getInvoiceKey,
     getSortTimestamp,
@@ -323,12 +324,12 @@ export const HistoryPage: React.FC = () => {
                         );
 
                 /*
-                 * Request ke complete hone ke waqt localStorage ki
-                 * latest copy dobara read karte hain.
+                 * Local cache is ONLY for instant display.
                  *
-                 * Isse agar user ne request ke dauran invoice Ship
-                 * kiya ho to purana Sheet response local Shipped
-                 * status ko Pending se overwrite nahi kar sakta.
+                 * Once Google Sheet successfully returns an invoice,
+                 * Sheet status becomes the final truth. This prevents an
+                 * old locally-saved "Shipped" status from staying Shipped
+                 * when the actual Sheet says Pending.
                  */
                 const latestLocalInvoices =
                     (
@@ -356,16 +357,91 @@ export const HistoryPage: React.FC = () => {
                             );
                         }) as SheetInvoice[];
 
-                /*
-                 * Local aur Sheet ko pehle merge karna zaroori hai.
-                 * mergeInvoices local Shipped ko preserve karta hai.
-                 * Sheet row delete ya stale ho tab bhi local invoice
-                 * aur uska Shipped status app mein rahega.
-                 */
-                const invoices = mergeInvoices(
+                const mergedInvoices = mergeInvoices(
                     latestLocalInvoices,
                     sheetHistoryInvoices
                 );
+
+                const sheetInvoiceByKey = new Map<
+                    string,
+                    SheetInvoice
+                >();
+
+                sheetHistoryInvoices.forEach(
+                    (sheetInvoice) => {
+                        const key =
+                            getInvoiceKey(sheetInvoice);
+
+                        if (key) {
+                            sheetInvoiceByKey.set(
+                                key,
+                                sheetInvoice
+                            );
+                        }
+
+                        const invoiceNumber =
+                            cleanText(
+                                sheetInvoice.invoiceNumber
+                            );
+
+                        if (invoiceNumber) {
+                            sheetInvoiceByKey.set(
+                                invoiceNumber,
+                                sheetInvoice
+                            );
+                        }
+                    }
+                );
+
+                const invoices = mergedInvoices
+                    .map((invoice) => {
+                        const sheetInvoice =
+                            sheetInvoiceByKey.get(
+                                getInvoiceKey(invoice)
+                            ) ||
+                            sheetInvoiceByKey.get(
+                                cleanText(
+                                    invoice.invoiceNumber
+                                )
+                            );
+
+                        if (!sheetInvoice) {
+                            return invoice;
+                        }
+
+                        return {
+                            ...invoice,
+
+                            /*
+                             * These fields must follow Sheet after
+                             * every successful sync.
+                             */
+                            paymentStatus:
+                                sheetInvoice.paymentStatus,
+                            orderStatus:
+                                sheetInvoice.orderStatus,
+                            orderShipStatus:
+                                sheetInvoice.orderShipStatus,
+                            customerShipStatus:
+                                sheetInvoice.customerShipStatus,
+
+                            /*
+                             * Keep Sheet metadata too, but display order
+                             * still uses invoiceDate only.
+                             */
+                            updatedAt:
+                                sheetInvoice.updatedAt ||
+                                invoice.updatedAt,
+                            revision:
+                                sheetInvoice.revision ||
+                                invoice.revision,
+                        } as SheetInvoice;
+                    })
+                    .sort(
+                        (a, b) =>
+                            getInvoiceCreatedTimestamp(b) -
+                            getInvoiceCreatedTimestamp(a)
+                    );
 
                 setSheetInvoices(invoices);
                 setHasLoadedHistory(true);
@@ -525,6 +601,70 @@ export const HistoryPage: React.FC = () => {
             });
     };
 
+    const handleShipClick = async (
+        invoice: SheetInvoice
+    ) => {
+        if (
+            invoice.customerShipStatus ===
+            'shipped'
+        ) {
+            push('This order is already shipped.');
+            return;
+        }
+
+        /*
+         * Do not trust only browser/local status here.
+         * Ship must be allowed ONLY when Google Sheet itself says
+         * Order Ship DCC = DCC Dispatch.
+         *
+         * This is one targeted request only when the user presses Ship.
+         */
+        try {
+            const freshInvoice =
+                await fetchInvoiceFromSheet(invoice);
+
+            if (!freshInvoice) {
+                push(
+                    'Could not verify this order in Google Sheet. Please try again.'
+                );
+                return;
+            }
+
+            const dccStatus = cleanText(
+                freshInvoice.orderShipStatus
+            ).toLowerCase();
+
+            if (dccStatus !== 'dcc dispatch') {
+                push(
+                    'Cannot ship yet. DCC Dispatch is not completed for this order.'
+                );
+                return;
+            }
+
+            /*
+             * Use the fresh Sheet copy for the confirmation,
+             * while retaining local fields that Sheet may not carry.
+             */
+            setShipTarget({
+                ...invoice,
+                ...freshInvoice,
+                orderShipStatus:
+                    freshInvoice.orderShipStatus,
+                customerShipStatus:
+                    freshInvoice.customerShipStatus,
+            });
+        } catch (error) {
+            console.error(
+                'DCC Dispatch verification failed:',
+                error
+            );
+
+            push(
+                'Could not verify DCC Dispatch from Google Sheet. Please try again.'
+            );
+        }
+    };
+
     const confirmCustomerShip = () => {
         if (!shipTarget) {
             return;
@@ -570,16 +710,42 @@ export const HistoryPage: React.FC = () => {
          */
         void updateCustomerShipInGoogleSheet(
             updatedInvoice
-        ).catch((error) => {
-            console.error(
-                'Ship sync failed:',
-                error
-            );
+        )
+            .then(() => {
+                /*
+                 * Local UI was instant. Now quietly confirm the final
+                 * state from Sheet so local cache cannot remain stale.
+                 */
+                window.setTimeout(
+                    () =>
+                        void loadHistoryFromSheet(
+                            true
+                        ),
+                    900
+                );
+            })
+            .catch((error) => {
+                console.error(
+                    'Ship sync failed:',
+                    error
+                );
 
-            push(
-                'Order marked shipped locally. Backend sync failed, please refresh.'
-            );
-        });
+                push(
+                    'Ship update could not be saved. Restoring status from Google Sheet.'
+                );
+
+                /*
+                 * If write failed, immediately let Sheet truth replace
+                 * the optimistic local Shipped status.
+                 */
+                window.setTimeout(
+                    () =>
+                        void loadHistoryFromSheet(
+                            true
+                        ),
+                    300
+                );
+            });
     };
 
     const handleShare = (invoice: SheetInvoice) => {
@@ -913,7 +1079,7 @@ export const HistoryPage: React.FC = () => {
                                         <button
                                             className="h-action-btn h-action-btn--ship"
                                             onClick={() =>
-                                                setShipTarget(
+                                                void handleShipClick(
                                                     invoice
                                                 )
                                             }
