@@ -1,4 +1,4 @@
-
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { SALES_REPS } from 'api/salesRepApi';
 import { useInvoiceStore } from 'store/invoiceStore';
@@ -106,35 +106,24 @@ const getAdminInvoiceCreatedTimestamp = (
 };
 
 
-const getAdminInvoiceDateKey = (
+const getInvoiceDateKey = (
     invoice: SheetInvoice
 ): string => {
     const raw = cleanText(invoice.invoiceDate);
     if (!raw) return '';
 
-    const parsed = new Date(raw);
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return '';
 
-    if (Number.isNaN(parsed.getTime())) {
-        return raw.slice(0, 10);
-    }
+    const year = date.getFullYear();
+    const month = String(
+        date.getMonth() + 1
+    ).padStart(2, '0');
+    const day = String(
+        date.getDate()
+    ).padStart(2, '0');
 
-    const parts = new Intl.DateTimeFormat('en-CA', {
-        timeZone: 'Asia/Dubai',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-    }).formatToParts(parsed);
-
-    const year =
-        parts.find((part) => part.type === 'year')?.value || '';
-    const month =
-        parts.find((part) => part.type === 'month')?.value || '';
-    const day =
-        parts.find((part) => part.type === 'day')?.value || '';
-
-    return year && month && day
-        ? `${year}-${month}-${day}`
-        : '';
+    return `${year}-${month}-${day}`;
 };
 
 const formatCompactAmount = (value: number): string => {
@@ -228,7 +217,7 @@ const SALESPERSON_SYNC_MS = 6000;
 const PENDING_RETRY_MS = 10000;
 const PENDING_SERVER_GRACE_MS = 5000;
 const PREVIEW_RETURN_STATE_KEY =
-    'truecell-management-preview-return:v2';
+    'truecell-management-preview-return:v1';
 
 type MasterCache = {
     savedAt: number;
@@ -238,7 +227,6 @@ type MasterCache = {
 type ManagementRestoreState = {
     selectedSalesPerson: string;
     invoiceFilter: InvoiceFilter;
-    dateFilter: string;
 };
 
 type PendingInvoicedWrite = {
@@ -282,7 +270,6 @@ const consumePreviewReturnState =
             return {
                 selectedSalesPerson,
                 invoiceFilter,
-                dateFilter: cleanText(parsed?.dateFilter),
             };
         } catch {
             try {
@@ -580,9 +567,7 @@ export const ManagementPage: React.FC = () => {
             previewReturnState?.invoiceFilter || 'all'
         );
     const [filterOpen, setFilterOpen] = useState(false);
-    const [dateFilter, setDateFilter] = useState(
-        previewReturnState?.dateFilter || ''
-    );
+    const [dateFilter, setDateFilter] = useState('');
     const filterRef = useRef<HTMLDivElement | null>(null);
 
     const [loading, setLoading] = useState(false);
@@ -889,7 +874,8 @@ export const ManagementPage: React.FC = () => {
         const visible = dateFilter
             ? statusFiltered.filter(
                   (invoice) =>
-                      getAdminInvoiceDateKey(invoice) === dateFilter
+                      getInvoiceDateKey(invoice) ===
+                      dateFilter
               )
             : statusFiltered;
 
@@ -898,7 +884,11 @@ export const ManagementPage: React.FC = () => {
                 getAdminInvoiceCreatedTimestamp(b) -
                 getAdminInvoiceCreatedTimestamp(a)
         );
-    }, [dateFilter, invoiceFilter, selectedInvoices]);
+    }, [
+        dateFilter,
+        invoiceFilter,
+        selectedInvoices,
+    ]);
 
     const totals = useMemo(() => {
         return filteredInvoices.reduce(
@@ -930,7 +920,6 @@ export const ManagementPage: React.FC = () => {
                 JSON.stringify({
                     selectedSalesPerson,
                     invoiceFilter,
-                    dateFilter,
                 })
             );
         } catch {
@@ -1476,7 +1465,6 @@ export const ManagementPage: React.FC = () => {
                                         setInvoiceFilter(
                                             'all'
                                         );
-                                        setDateFilter('');
                                         setFilterOpen(false);
                                     }}
                                     style={{
@@ -1572,7 +1560,7 @@ export const ManagementPage: React.FC = () => {
                             </button>
                         </div>
 
-                        {/* STATUS + DATE FILTERS */}
+                        {/* STATUS + DATE FILTER */}
 
                         <div
                             style={{
@@ -1580,8 +1568,8 @@ export const ManagementPage: React.FC = () => {
                                 maxWidth: 370,
                                 margin: '0 auto 14px',
                                 display: 'flex',
-                                alignItems: 'stretch',
                                 gap: 10,
+                                alignItems: 'stretch',
                                 position: 'relative',
                                 zIndex: 20,
                             }}
@@ -1590,167 +1578,172 @@ export const ManagementPage: React.FC = () => {
                                 ref={filterRef}
                                 style={{
                                     position: 'relative',
-                                    width: '42%',
+                                    flex: '0 0 42%',
                                     minWidth: 0,
                                 }}
                             >
-                            <button
-                                type="button"
-                                onClick={() =>
-                                    setFilterOpen(
-                                        (current) => !current
-                                    )
-                                }
-                                style={{
-                                    position: 'relative',
-                                    width: '100%',
-                                    height: 50,
-                                    borderRadius: 13,
-                                    border: filterOpen
-                                        ? `1px solid ${ACCENT}`
-                                        : '1px solid #dddddd',
-                                    background: '#fff',
-                                    color: TEXT,
-                                    padding: '0 34px 0 12px',
-                                    fontSize: 13,
-                                    fontWeight: 600,
-                                    textAlign: 'center',
-                                    cursor: 'pointer',
-                                    outline: 'none',
-                                    boxShadow: filterOpen
-                                        ? '0 5px 16px rgba(179,11,99,0.10)'
-                                        : '0 4px 13px rgba(0,0,0,0.035)',
-                                    boxSizing: 'border-box',
-                                }}
-                            >
-                                {invoiceFilter === 'all'
-                                    ? 'All'
-                                    : invoiceFilter === 'invoiced'
-                                      ? 'Invoiced'
-                                      : 'Pending'}
-
-                                <span
-                                    aria-hidden="true"
-                                    style={{
-                                        position: 'absolute',
-                                        right: 16,
-                                        top: '50%',
-                                        transform: filterOpen
-                                            ? 'translateY(-50%) rotate(180deg)'
-                                            : 'translateY(-50%)',
-                                        width: 0,
-                                        height: 0,
-                                        borderLeft: '5px solid transparent',
-                                        borderRight: '5px solid transparent',
-                                        borderTop: `6px solid ${ACCENT}`,
-                                        transition: 'transform 0.15s ease',
-                                    }}
-                                />
-                            </button>
-
-                            {filterOpen && (
-                                <div
-                                    style={{
-                                        position: 'absolute',
-                                        top: 57,
-                                        left: 0,
-                                        right: 0,
-                                        padding: 6,
-                                        borderRadius: 14,
-                                        border: '1px solid #eadbe3',
-                                        background: '#fff',
-                                        boxShadow:
-                                            '0 12px 28px rgba(0,0,0,0.12)',
-                                        overflow: 'hidden',
-                                    }}
-                                >
-                                    {(
-                                        [
-                                            ['all', 'All'],
-                                            ['invoiced', 'Invoiced'],
-                                            ['pending', 'Pending'],
-                                        ] as const
-                                    ).map(([value, label]) => {
-                                        const active =
-                                            invoiceFilter === value;
-
-                                        return (
-                                            <button
-                                                key={value}
-                                                type="button"
-                                                onClick={() => {
-                                                    setInvoiceFilter(
-                                                        value
-                                                    );
-                                                    setFilterOpen(
-                                                        false
-                                                    );
-                                                }}
-                                                style={{
-                                                    width: '100%',
-                                                    minHeight: 42,
-                                                    border: 'none',
-                                                    borderRadius: 10,
-                                                    background: active
-                                                        ? '#fff0f7'
-                                                        : '#fff',
-                                                    color: active
-                                                        ? ACCENT
-                                                        : TEXT,
-                                                    fontSize: 14,
-                                                    fontWeight: active
-                                                        ? 700
-                                                        : 500,
-                                                    textAlign: 'center',
-                                                    cursor: 'pointer',
-                                                }}
-                                            >
-                                                {label}
-                                            </button>
-                                        );
-                                    })}
-                                </div>
-                            )}
-                            </div>
-
-                            <div
-                                style={{
-                                    width: '58%',
-                                    minWidth: 0,
-                                    position: 'relative',
-                                }}
-                            >
-                                <input
-                                    type="date"
-                                    value={dateFilter}
-                                    onChange={(event) =>
-                                        setDateFilter(
-                                            event.target.value
+                                <button
+                                    type="button"
+                                    onClick={() =>
+                                        setFilterOpen(
+                                            (current) => !current
                                         )
                                     }
-                                    aria-label="Filter invoices by date"
                                     style={{
+                                        position: 'relative',
                                         width: '100%',
                                         height: 50,
                                         borderRadius: 13,
-                                        border: dateFilter
+                                        border: filterOpen
                                             ? `1px solid ${ACCENT}`
                                             : '1px solid #dddddd',
                                         background: '#fff',
                                         color: TEXT,
-                                        padding: '0 12px',
+                                        padding: '0 32px 0 10px',
                                         fontSize: 13,
                                         fontWeight: 600,
+                                        textAlign: 'center',
+                                        cursor: 'pointer',
                                         outline: 'none',
-                                        boxShadow: dateFilter
-                                            ? '0 5px 16px rgba(179,11,99,0.08)'
+                                        boxShadow: filterOpen
+                                            ? '0 5px 16px rgba(179,11,99,0.10)'
                                             : '0 4px 13px rgba(0,0,0,0.035)',
                                         boxSizing: 'border-box',
-                                        cursor: 'pointer',
-                                        colorScheme: 'light',
                                     }}
-                                />
+                                >
+                                    {invoiceFilter === 'all'
+                                        ? 'All'
+                                        : invoiceFilter ===
+                                            'invoiced'
+                                          ? 'Invoiced'
+                                          : 'Pending'}
+
+                                    <span
+                                        aria-hidden="true"
+                                        style={{
+                                            position: 'absolute',
+                                            right: 13,
+                                            top: '50%',
+                                            transform: filterOpen
+                                                ? 'translateY(-50%) rotate(180deg)'
+                                                : 'translateY(-50%)',
+                                            width: 0,
+                                            height: 0,
+                                            borderLeft:
+                                                '5px solid transparent',
+                                            borderRight:
+                                                '5px solid transparent',
+                                            borderTop:
+                                                `6px solid ${ACCENT}`,
+                                        }}
+                                    />
+                                </button>
+
+                                {filterOpen && (
+                                    <div
+                                        style={{
+                                            position: 'absolute',
+                                            top: 57,
+                                            left: 0,
+                                            right: 0,
+                                            padding: 6,
+                                            borderRadius: 14,
+                                            border:
+                                                '1px solid #eadbe3',
+                                            background: '#fff',
+                                            boxShadow:
+                                                '0 12px 28px rgba(0,0,0,0.12)',
+                                            overflow: 'hidden',
+                                        }}
+                                    >
+                                        {(
+                                            [
+                                                ['all', 'All'],
+                                                [
+                                                    'invoiced',
+                                                    'Invoiced',
+                                                ],
+                                                [
+                                                    'pending',
+                                                    'Pending',
+                                                ],
+                                            ] as const
+                                        ).map(
+                                            ([value, label]) => {
+                                                const active =
+                                                    invoiceFilter ===
+                                                    value;
+
+                                                return (
+                                                    <button
+                                                        key={
+                                                            value
+                                                        }
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setInvoiceFilter(
+                                                                value
+                                                            );
+                                                            setFilterOpen(
+                                                                false
+                                                            );
+                                                        }}
+                                                        style={{
+                                                            width: '100%',
+                                                            minHeight: 40,
+                                                            border: 'none',
+                                                            borderRadius: 9,
+                                                            background:
+                                                                active
+                                                                    ? '#fff0f7'
+                                                                    : '#fff',
+                                                            color: active
+                                                                ? ACCENT
+                                                                : TEXT,
+                                                            fontSize: 13,
+                                                            fontWeight:
+                                                                active
+                                                                    ? 700
+                                                                    : 500,
+                                                            textAlign:
+                                                                'center',
+                                                            cursor: 'pointer',
+                                                        }}
+                                                    >
+                                                        {label}
+                                                    </button>
+                                                );
+                                            }
+                                        )}
+                                    </div>
+                                )}
                             </div>
+
+                            <input
+                                type="date"
+                                value={dateFilter}
+                                onChange={(event) =>
+                                    setDateFilter(
+                                        event.target.value
+                                    )
+                                }
+                                aria-label="Invoice date"
+                                style={{
+                                    flex: '1 1 58%',
+                                    minWidth: 0,
+                                    height: 50,
+                                    borderRadius: 13,
+                                    border:
+                                        '1px solid #dddddd',
+                                    background: '#fff',
+                                    color: TEXT,
+                                    padding: '0 10px',
+                                    fontSize: 13,
+                                    fontWeight: 600,
+                                    outline: 'none',
+                                    boxSizing: 'border-box',
+                                }}
+                            />
                         </div>
 
                         {/* LOADING */}
