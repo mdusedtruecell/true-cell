@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+
 import { useNavigate } from 'react-router-dom';
 import { SALES_REPS } from 'api/salesRepApi';
 import { useInvoiceStore } from 'store/invoiceStore';
@@ -87,6 +87,56 @@ const normalizeInvoicedState = (
 ): 'invoiced' | 'pending' =>
     cleanText(value) ? 'invoiced' : 'pending';
 
+
+/*
+ * Admin card order is based ONLY on original invoice creation time.
+ * Saving Invoice No., background sheet sync, Shipping Status, or any other
+ * later update must not move the card up/down.
+ */
+const getAdminInvoiceCreatedTimestamp = (
+    invoice: SheetInvoice
+): number => {
+    const created = Date.parse(
+        cleanText(invoice.invoiceDate)
+    );
+
+    return Number.isFinite(created)
+        ? created
+        : 0;
+};
+
+
+const getAdminInvoiceDateKey = (
+    invoice: SheetInvoice
+): string => {
+    const raw = cleanText(invoice.invoiceDate);
+    if (!raw) return '';
+
+    const parsed = new Date(raw);
+
+    if (Number.isNaN(parsed.getTime())) {
+        return raw.slice(0, 10);
+    }
+
+    const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Dubai',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    }).formatToParts(parsed);
+
+    const year =
+        parts.find((part) => part.type === 'year')?.value || '';
+    const month =
+        parts.find((part) => part.type === 'month')?.value || '';
+    const day =
+        parts.find((part) => part.type === 'day')?.value || '';
+
+    return year && month && day
+        ? `${year}-${month}-${day}`
+        : '';
+};
+
 const formatCompactAmount = (value: number): string => {
     const amount = Number(value) || 0;
     const absolute = Math.abs(amount);
@@ -163,7 +213,12 @@ const buildManagedInvoices = (
                 invoicedNumber,
                 invoiceState: normalizeInvoicedState(invoicedNumber),
             } as ManagedInvoice;
-        });
+        })
+        .sort(
+            (a, b) =>
+                getAdminInvoiceCreatedTimestamp(b) -
+                getAdminInvoiceCreatedTimestamp(a)
+        );
 };
 
 const MASTER_CACHE_KEY = 'truecell-management-all-history:v5';
@@ -173,7 +228,7 @@ const SALESPERSON_SYNC_MS = 6000;
 const PENDING_RETRY_MS = 10000;
 const PENDING_SERVER_GRACE_MS = 5000;
 const PREVIEW_RETURN_STATE_KEY =
-    'truecell-management-preview-return:v1';
+    'truecell-management-preview-return:v2';
 
 type MasterCache = {
     savedAt: number;
@@ -183,6 +238,7 @@ type MasterCache = {
 type ManagementRestoreState = {
     selectedSalesPerson: string;
     invoiceFilter: InvoiceFilter;
+    dateFilter: string;
 };
 
 type PendingInvoicedWrite = {
@@ -226,6 +282,7 @@ const consumePreviewReturnState =
             return {
                 selectedSalesPerson,
                 invoiceFilter,
+                dateFilter: cleanText(parsed?.dateFilter),
             };
         } catch {
             try {
@@ -523,6 +580,9 @@ export const ManagementPage: React.FC = () => {
             previewReturnState?.invoiceFilter || 'all'
         );
     const [filterOpen, setFilterOpen] = useState(false);
+    const [dateFilter, setDateFilter] = useState(
+        previewReturnState?.dateFilter || ''
+    );
     const filterRef = useRef<HTMLDivElement | null>(null);
 
     const [loading, setLoading] = useState(false);
@@ -818,15 +878,27 @@ export const ManagementPage: React.FC = () => {
     }, [allInvoices, selectedSalesPerson]);
 
     const filteredInvoices = useMemo(() => {
-        if (invoiceFilter === 'all') {
-            return selectedInvoices;
-        }
+        const statusFiltered =
+            invoiceFilter === 'all'
+                ? selectedInvoices
+                : selectedInvoices.filter(
+                      (invoice) =>
+                          invoice.invoiceState === invoiceFilter
+                  );
 
-        return selectedInvoices.filter(
-            (invoice) =>
-                invoice.invoiceState === invoiceFilter
+        const visible = dateFilter
+            ? statusFiltered.filter(
+                  (invoice) =>
+                      getAdminInvoiceDateKey(invoice) === dateFilter
+              )
+            : statusFiltered;
+
+        return [...visible].sort(
+            (a, b) =>
+                getAdminInvoiceCreatedTimestamp(b) -
+                getAdminInvoiceCreatedTimestamp(a)
         );
-    }, [invoiceFilter, selectedInvoices]);
+    }, [dateFilter, invoiceFilter, selectedInvoices]);
 
     const totals = useMemo(() => {
         return filteredInvoices.reduce(
@@ -858,6 +930,7 @@ export const ManagementPage: React.FC = () => {
                 JSON.stringify({
                     selectedSalesPerson,
                     invoiceFilter,
+                    dateFilter,
                 })
             );
         } catch {
@@ -1403,6 +1476,7 @@ export const ManagementPage: React.FC = () => {
                                         setInvoiceFilter(
                                             'all'
                                         );
+                                        setDateFilter('');
                                         setFilterOpen(false);
                                     }}
                                     style={{
@@ -1479,6 +1553,7 @@ export const ManagementPage: React.FC = () => {
                                     setInvoiceFilter(
                                         'all'
                                     );
+                                    setDateFilter('');
                                     setFilterOpen(false);
                                 }}
                                 style={{
@@ -1497,18 +1572,28 @@ export const ManagementPage: React.FC = () => {
                             </button>
                         </div>
 
-                        {/* FILTER - custom dropdown so browser/mobile native menu never appears */}
+                        {/* STATUS + DATE FILTERS */}
 
                         <div
-                            ref={filterRef}
                             style={{
-                                position: 'relative',
                                 width: '100%',
-                                maxWidth: 330,
+                                maxWidth: 370,
                                 margin: '0 auto 14px',
+                                display: 'flex',
+                                alignItems: 'stretch',
+                                gap: 10,
+                                position: 'relative',
                                 zIndex: 20,
                             }}
                         >
+                            <div
+                                ref={filterRef}
+                                style={{
+                                    position: 'relative',
+                                    width: '42%',
+                                    minWidth: 0,
+                                }}
+                            >
                             <button
                                 type="button"
                                 onClick={() =>
@@ -1526,8 +1611,8 @@ export const ManagementPage: React.FC = () => {
                                         : '1px solid #dddddd',
                                     background: '#fff',
                                     color: TEXT,
-                                    padding: '0 44px',
-                                    fontSize: 14,
+                                    padding: '0 34px 0 12px',
+                                    fontSize: 13,
                                     fontWeight: 600,
                                     textAlign: 'center',
                                     cursor: 'pointer',
@@ -1626,6 +1711,46 @@ export const ManagementPage: React.FC = () => {
                                     })}
                                 </div>
                             )}
+                            </div>
+
+                            <div
+                                style={{
+                                    width: '58%',
+                                    minWidth: 0,
+                                    position: 'relative',
+                                }}
+                            >
+                                <input
+                                    type="date"
+                                    value={dateFilter}
+                                    onChange={(event) =>
+                                        setDateFilter(
+                                            event.target.value
+                                        )
+                                    }
+                                    aria-label="Filter invoices by date"
+                                    style={{
+                                        width: '100%',
+                                        height: 50,
+                                        borderRadius: 13,
+                                        border: dateFilter
+                                            ? `1px solid ${ACCENT}`
+                                            : '1px solid #dddddd',
+                                        background: '#fff',
+                                        color: TEXT,
+                                        padding: '0 12px',
+                                        fontSize: 13,
+                                        fontWeight: 600,
+                                        outline: 'none',
+                                        boxShadow: dateFilter
+                                            ? '0 5px 16px rgba(179,11,99,0.08)'
+                                            : '0 4px 13px rgba(0,0,0,0.035)',
+                                        boxSizing: 'border-box',
+                                        cursor: 'pointer',
+                                        colorScheme: 'light',
+                                    }}
+                                />
+                            </div>
                         </div>
 
                         {/* LOADING */}
