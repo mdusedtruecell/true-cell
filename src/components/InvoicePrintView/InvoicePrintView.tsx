@@ -55,7 +55,7 @@ const InvoicePrintView = React.forwardRef<HTMLDivElement, Props>(({ invoice }, r
                             display: 'inline-block',
                             padding: '3px 8px',
                             borderRadius: 6,
-                            background: '#f8eaf1',
+                            background: '#f2f2f2',
                         }}
                     >
                         {invoice.invoiceNumber}
