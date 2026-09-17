@@ -49,7 +49,7 @@ const InvoicePrintView = React.forwardRef<HTMLDivElement, Props>(({ invoice }, r
                 <div className="invoice-datetime">
                     <div>Date : {formattedDate}</div>
                     <div>Time : {formattedTime}</div>
-                    <div style={{ marginTop: 6 }}>Invoice : {invoice.invoiceNumber}</div>
+                    <div style={{ marginTop: 12 }}>{invoice.invoiceNumber}</div>
                 </div>
             </div>
 
