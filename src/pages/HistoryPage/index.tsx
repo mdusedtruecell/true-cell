@@ -709,22 +709,6 @@ export const HistoryPage: React.FC = () => {
             return;
         }
 
-        /*
-         * NO network request on Ship click.
-         * The 5-second background Sheet sync keeps this value fresh.
-         * Result: message/popup appears instantly.
-         */
-        const dccStatus = cleanText(
-            invoice.orderShipStatus
-        ).toLowerCase();
-
-        if (dccStatus !== 'dcc dispatch') {
-            push(
-                'Cannot ship yet. DCC Dispatch is not completed for this order.'
-            );
-            return;
-        }
-
         setShipTarget(invoice);
     };
 
